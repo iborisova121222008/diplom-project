@@ -11,7 +11,8 @@ from src.models.custom_decision_tree import (
     select_random_features,
     build_tree,
     predict_one,
-    predict_tree
+    predict_tree,
+    calculate_class_weights
 )
 
 
@@ -38,6 +39,76 @@ Y_TEST = np.array([
     1
 ])
 
+
+def test_balanced_class_weights():
+
+    y = np.array([
+        0,
+        0,
+        0,
+        0,
+        1
+    ])
+
+    class_weights = calculate_class_weights(y)
+
+    assert np.isclose(
+        class_weights[0],
+        0.625
+    )
+
+    assert np.isclose(
+        class_weights[1],
+        2.5
+    )
+
+
+def test_weighted_gini_impurity():
+
+    y = np.array([
+        0,
+        0,
+        0,
+        0,
+        1
+    ])
+
+    class_weights = calculate_class_weights(y)
+
+    weighted_gini = gini_impurity(
+        y,
+        class_weights
+    )
+
+    assert np.isclose(
+        weighted_gini,
+        0.5
+    )
+
+
+def test_weighted_leaf_probability():
+
+    y = np.array([
+        0,
+        0,
+        0,
+        0,
+        1
+    ])
+
+    class_weights = calculate_class_weights(y)
+
+    leaf = create_leaf(
+        y,
+        class_weights
+    )
+
+    assert np.isclose(
+        leaf.probability,
+        0.5
+    )
+
+    assert leaf.prediction == 1
 
 def test_tree_node_is_leaf():
     """
