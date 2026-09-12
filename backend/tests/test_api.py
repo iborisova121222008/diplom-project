@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -116,6 +117,13 @@ def test_fold_similarity_contains_all_pairs():
     assert len(response.json()) == 45
 
 
+def test_feature_frequency_distribution_covers_distinct_root_lasso_probes():
+    response = client.get("/api/feature-frequency-distribution")
+    assert response.status_code == 200
+    assert len(response.json()) == 10
+    assert sum(item["probe_count"] for item in response.json()) == 2015
+
+
 def test_external_compatibility_is_exposed_from_dataset_metadata():
     response = client.get("/api/datasets")
     external = next(
@@ -126,3 +134,176 @@ def test_external_compatibility_is_exposed_from_dataset_metadata():
         "probe_order_matches_development"
     ] is True
     assert external["compatibility_metadata"]["missing_final_probes"] == []
+
+
+def test_locked_forest_manifest_and_tree_assets_are_read_only():
+    manifest_response = client.get("/api/forest/manifest")
+    assert manifest_response.status_code == 200
+    manifest = manifest_response.json()
+    assert manifest["tree_count"] == 30
+    assert manifest["custom_tree_count"] == 30
+    assert len(manifest["trees"]) == 30
+    assert len(manifest["selected_probes"]) == 15
+    assert all(
+        probe in manifest["selected_probes"]
+        for tree in manifest["trees"]
+        for probe in tree["used_probes"]
+    )
+
+    tree_response = client.get("/api/forest/trees/1")
+    assert tree_response.status_code == 200
+    assert tree_response.headers["content-type"].startswith("image/svg+xml")
+    assert "<svg" in tree_response.text
+    assert client.get("/api/forest/trees/31").status_code == 404
+
+
+def test_filtered_table_exports_preserve_filters_and_support_xlsx():
+    csv_response = client.get(
+        "/api/table-exports/fold-results",
+        params={"model": "custom_random_forest", "fold": 3},
+    )
+    assert csv_response.status_code == 200
+    assert "custom_random_forest" in csv_response.text
+    assert "sklearn_random_forest" not in csv_response.text
+    assert "model" in csv_response.headers["x-export-filters"]
+
+    xlsx_response = client.get(
+        "/api/table-exports/features",
+        params={"experiment": "final-model-gse25055", "format": "xlsx"},
+    )
+    assert xlsx_response.status_code == 200
+    assert xlsx_response.content.startswith(b"PK")
+
+
+def test_expression_preview_is_bounded_and_uses_allowlisted_datasets():
+    response = client.get(
+        "/api/expression-preview",
+        params={
+            "dataset": "GSE25055", "patient_search": "GSM61509",
+            "probe_search": "1007", "row_limit": 3, "column_limit": 2,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataset"] == "GSE25055"
+    assert len(body["patients"]) <= 3
+    assert body["probes"][0] == "1007_s_at"
+    assert len(body["probes"]) <= 2
+    assert all(len(row) == len(body["probes"]) for row in body["values"])
+    assert client.get(
+        "/api/expression-preview", params={"dataset": "../../secret"}
+    ).status_code == 422
+    assert client.get(
+        "/api/expression-preview", params={"row_limit": 21}
+    ).status_code == 422
+
+
+def test_expression_window_exports_only_the_requested_window():
+    csv_response = client.get(
+        "/api/expression-preview/export",
+        params={"dataset": "GSE25065", "row_limit": 2, "column_limit": 3},
+    )
+    assert csv_response.status_code == 200
+    assert len(csv_response.text.strip().splitlines()) == 3
+    xlsx_response = client.get(
+        "/api/expression-preview/export",
+        params={"dataset": "GSE25065", "row_limit": 2, "column_limit": 3, "format": "xlsx"},
+    )
+    assert xlsx_response.status_code == 200
+    assert xlsx_response.content.startswith(b"PK")
+
+
+def test_forest_structure_distinguishes_custom_and_sklearn_models():
+    custom = client.get(
+        "/api/forest/structure",
+        params={"implementation": "custom", "tree_index": 1, "visible_depth": 2},
+    )
+    sklearn = client.get(
+        "/api/forest/structure",
+        params={"implementation": "sklearn", "tree_index": 1, "visible_depth": 2},
+    )
+    assert custom.status_code == sklearn.status_code == 200
+    assert custom.json()["implementation"] == "custom"
+    assert sklearn.json()["implementation"] == "sklearn"
+    assert custom.json()["nodes"][0]["probe_id"] is not None
+    assert all(item["depth"] <= 2 for item in custom.json()["nodes"])
+
+
+def test_prediction_filters_and_summaries_use_persisted_rows():
+    response = client.get(
+        "/api/predictions",
+        params={
+            "experiment": "balanced-rf-nested-cv",
+            "model": "custom_random_forest", "correct": "false",
+            "sort_by": "patient_id", "sort_order": "asc", "limit": 10,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["correct"] == 0
+    assert body["incorrect"] == body["total"]
+    assert all(item["actual_class"] != item["predicted_class"] for item in body["items"])
+
+
+def test_metrics_exports_do_not_expose_classification_cutoffs():
+    response = client.get(
+        "/api/table-exports/metrics",
+        params={"cohort": "external", "model": "comparison"},
+    )
+    assert response.status_code == 200
+    assert "roc_auc" in response.text
+    assert "threshold" not in response.text.lower()
+
+    features = client.get(
+        "/api/table-exports/feature-stability",
+        params={"minimum_frequency": 8, "final_only": "true"},
+    )
+    assert features.status_code == 200
+    assert "selection_frequency" in features.text
+    assert all(
+        float(line.split(",")[3]) >= 0.8
+        for line in features.text.strip().splitlines()[1:]
+    )
+
+
+def test_openapi_application_routes_are_get_only():
+    schema = client.get("/openapi.json").json()
+    assert all(
+        set(methods).issubset({"get", "parameters"})
+        for path, methods in schema["paths"].items()
+        if path.startswith("/api/")
+    )
+
+
+def test_development_frontend_origins_remain_allowed():
+    for origin in ("http://localhost:5173", "http://127.0.0.1:5173"):
+        response = client.get("/api/datasets", headers={"Origin": origin})
+        assert response.headers["access-control-allow-origin"] == origin
+
+
+@pytest.mark.parametrize(("path", "params"), [
+    ("/api/health", {}),
+    ("/api/datasets", {}),
+    ("/api/expression-preview", {}),
+    ("/api/preprocessing", {}),
+    ("/api/features", {}),
+    ("/api/models", {}),
+    ("/api/cv-results", {}),
+    ("/api/comparison", {}),
+    ("/api/final-validation", {}),
+    ("/api/experiments", {}),
+    ("/api/predictions", {"experiment": "balanced-rf-nested-cv"}),
+    ("/api/curves", {"experiment": "balanced-rf-nested-cv"}),
+    ("/api/model-disagreements", {}),
+    ("/api/fold-feature-similarity", {}),
+    ("/api/feature-stability", {}),
+    ("/api/feature-heatmap", {}),
+    ("/api/feature-frequency-distribution", {}),
+    ("/api/forest/manifest", {}),
+    ("/api/forest/structure", {}),
+    ("/api/forest/trees/1", {}),
+    ("/api/reports", {}),
+    ("/api/table-exports/metrics", {"cohort": "oof"}),
+])
+def test_documented_get_routes_return_success(path, params):
+    assert client.get(path, params=params).status_code == 200

@@ -225,6 +225,8 @@ npm run dev
 ```text
 GET /api/health
 GET /api/datasets
+GET /api/expression-preview
+GET /api/expression-preview/export
 GET /api/preprocessing
 GET /api/features
 GET /api/models
@@ -238,6 +240,11 @@ GET /api/model-disagreements
 GET /api/fold-feature-similarity
 GET /api/feature-stability
 GET /api/feature-heatmap
+GET /api/feature-frequency-distribution
+GET /api/forest/manifest
+GET /api/forest/structure
+GET /api/forest/trees/{tree_index}
+GET /api/table-exports/{view}
 GET /api/reports
 GET /api/exports/{report_key}
 ```
@@ -262,9 +269,14 @@ Frontend checks:
 ```powershell
 Set-Location frontend-v2
 npm run lint
+npm test
 npm run typecheck
 npm run build
 ```
+
+The dashboard has two top-level routes: `/` and `/experiment`. The experiment
+workspace uses six compact URL-backed subtabs for inputs, preparation,
+features, forest inspection, evaluation, and stored patient predictions.
 
 ## Reproducibility and leakage protections
 

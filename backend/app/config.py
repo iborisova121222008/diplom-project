@@ -30,7 +30,8 @@ FRONTEND_ORIGIN = os.getenv(
 # Keep localhost available even when an older local .env still names 127.0.0.1.
 FRONTEND_ORIGINS = sorted({
     FRONTEND_ORIGIN,
-    "http://localhost:5173"
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 })
 
 ARTIFACT_ROOT = PROJECT_DIR.resolve()

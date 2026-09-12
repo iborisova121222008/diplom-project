@@ -2,16 +2,19 @@ import csv
 import io
 import json
 import math
+from datetime import date
 
+import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import and_, func, select, text
+from sqlalchemy import and_, exists, func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased, selectinload
 from sklearn.metrics import precision_recall_curve, roc_curve
 
-from app.config import FRONTEND_ORIGINS
+from app.config import FRONTEND_ORIGINS, PROJECT_DIR
+from app.artifacts import ArtifactReader
 from app.database import get_session
 from app.models import (
     Dataset,
@@ -28,19 +31,27 @@ from app.schemas import (
     CurvesResponse,
     CvModelResponse,
     DatasetResponse,
+    ExpressionPreviewResponse,
     DisagreementPageResponse,
     ExperimentResponse,
     FeaturePageResponse,
     FeatureHeatmapResponse,
     FeatureStabilityResponse,
+    FrequencyBucketResponse,
     FinalValidationResponse,
     FoldSimilarityResponse,
+    ForestManifestResponse,
+    ForestStructureResponse,
     HealthResponse,
     ModelResponse,
     PredictionPageResponse,
     PreprocessingStepResponse,
     ReportResponse,
 )
+
+
+TREE_ASSET_DIR = PROJECT_DIR / "backend/generated/tree_previews"
+ARTIFACT_READER = ArtifactReader(PROJECT_DIR)
 
 
 
@@ -110,6 +121,122 @@ def require_experiment(session, slug):
     return experiment
 
 
+def read_tree_manifest():
+    path = TREE_ASSET_DIR / "manifest.json"
+    if not path.is_file():
+        raise HTTPException(503, "Generated locked-forest visualization metadata is unavailable.")
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise HTTPException(503, "Generated locked-forest visualization metadata is invalid.") from error
+    if manifest.get("tree_count") != 30 or manifest.get("custom_tree_count") != 30 or len(manifest.get("selected_probes", [])) != 15:
+        raise HTTPException(503, "Generated locked-forest visualization metadata fails its contract.")
+    return manifest
+
+
+@app.get("/api/forest/manifest", response_model=ForestManifestResponse)
+def forest_manifest():
+    return read_tree_manifest()
+
+
+@app.get("/api/forest/trees/{tree_index}", response_class=Response)
+def forest_tree(tree_index: int):
+    if tree_index < 1 or tree_index > 30:
+        raise HTTPException(404, "Tree index must be between 1 and 30.")
+    manifest = read_tree_manifest()
+    record = next(
+        (item for item in manifest["trees"] if item["tree_index"] == tree_index),
+        None,
+    )
+    if record is None or record["asset"] != f"tree-{tree_index:02d}.svg":
+        raise HTTPException(503, "Requested tree preview is not present in the verified manifest.")
+    path = TREE_ASSET_DIR / record["asset"]
+    if not path.is_file() or path.parent != TREE_ASSET_DIR:
+        raise HTTPException(503, "Requested tree preview is unavailable.")
+    return Response(
+        content=path.read_text(encoding="utf-8"),
+        media_type="image/svg+xml",
+        headers={"Content-Disposition": f'inline; filename="locked-sklearn-tree-{tree_index:02d}.svg"'},
+    )
+
+
+def _custom_tree_details(root):
+    maximum_depth = 0
+    node_count = 0
+    stack = [(root, 0)]
+    while stack:
+        node, depth = stack.pop()
+        node_count += 1
+        maximum_depth = max(maximum_depth, depth)
+        if node.left is not None:
+            stack.append((node.left, depth + 1))
+        if node.right is not None:
+            stack.append((node.right, depth + 1))
+    return maximum_depth, node_count
+
+
+@app.get("/api/forest/structure", response_model=ForestStructureResponse)
+def forest_structure(
+    implementation: str = Query(default="custom", pattern="^(custom|sklearn)$"),
+    tree_index: int = Query(default=1, ge=1, le=30),
+    visible_depth: int = Query(default=3, ge=1, le=6),
+):
+    package = ARTIFACT_READER.final_package
+    probes = [str(value) for value in package["selected_probes"]]
+    nodes = []
+    if implementation == "custom":
+        root = package["custom_random_forest"][tree_index - 1]
+        full_depth, full_node_count = _custom_tree_details(root)
+        stack = [(root, None, None, 0, 0)]
+        while stack:
+            node, parent_id, branch, depth, position = stack.pop()
+            node_id = len(nodes)
+            leaf = node.left is None and node.right is None
+            feature_index = int(node.feature_index) if not leaf else -1
+            nodes.append({
+                "node_id": node_id, "parent_id": parent_id, "branch": branch,
+                "depth": depth, "position": position,
+                "probe_id": probes[feature_index] if feature_index >= 0 else None,
+                "split_value": float(node.threshold) if feature_index >= 0 else None,
+                "probability": float(node.probability),
+                "prediction": int(node.prediction), "leaf": leaf,
+            })
+            if depth < visible_depth:
+                if node.right is not None:
+                    stack.append((node.right, node_id, "right", depth + 1, position * 2 + 1))
+                if node.left is not None:
+                    stack.append((node.left, node_id, "left", depth + 1, position * 2))
+    else:
+        estimator = package["sklearn_random_forest"].estimators_[tree_index - 1]
+        tree = estimator.tree_
+        full_depth, full_node_count = int(tree.max_depth), int(tree.node_count)
+        stack = [(0, None, None, 0, 0)]
+        while stack:
+            raw_id, parent_id, branch, depth, position = stack.pop()
+            node_id = len(nodes)
+            feature_index = int(tree.feature[raw_id])
+            leaf = feature_index < 0
+            class_values = tree.value[raw_id][0]
+            total = float(class_values.sum())
+            probability = float(class_values[1] / total) if total else 0.0
+            nodes.append({
+                "node_id": node_id, "parent_id": parent_id, "branch": branch,
+                "depth": depth, "position": position,
+                "probe_id": probes[feature_index] if feature_index >= 0 else None,
+                "split_value": float(tree.threshold[raw_id]) if feature_index >= 0 else None,
+                "probability": probability,
+                "prediction": int(class_values.argmax()), "leaf": leaf,
+            })
+            if not leaf and depth < visible_depth:
+                stack.append((int(tree.children_right[raw_id]), node_id, "right", depth + 1, position * 2 + 1))
+                stack.append((int(tree.children_left[raw_id]), node_id, "left", depth + 1, position * 2))
+    return {
+        "implementation": implementation, "tree_index": tree_index,
+        "visible_depth": visible_depth, "full_depth": full_depth,
+        "full_node_count": full_node_count, "nodes": nodes,
+    }
+
+
 @app.get("/api/health", response_model=HealthResponse)
 def health(session: Session = Depends(get_session)):
     session.execute(text("SELECT 1"))
@@ -130,6 +257,99 @@ def datasets(session: Session = Depends(get_session)):
         raise HTTPException(503, "No imported dataset records are available.")
 
     return records
+
+
+def _expression_window(
+    dataset: str,
+    patient_search: str | None,
+    probe_search: str | None,
+    row_offset: int,
+    row_limit: int,
+    column_offset: int,
+    column_limit: int,
+):
+    checkpoints = {
+        "GSE25055": ARTIFACT_READER.training_checkpoint,
+        "GSE25065": ARTIFACT_READER.external_checkpoint,
+    }
+    if dataset not in checkpoints:
+        raise HTTPException(400, "Unknown dataset.")
+    frame = checkpoints[dataset]["X"]
+    if patient_search and patient_search.strip():
+        needle = patient_search.strip().casefold()
+        frame = frame.loc[
+            [needle in str(index).casefold() for index in frame.index]
+        ]
+    if probe_search and probe_search.strip():
+        needle = probe_search.strip().casefold()
+        frame = frame.loc[:, [
+            needle in str(column).casefold() for column in frame.columns
+        ]]
+    patients = [str(value) for value in frame.index]
+    probes = [str(value) for value in frame.columns]
+    window = frame.iloc[
+        row_offset:row_offset + row_limit,
+        column_offset:column_offset + column_limit,
+    ]
+    return {
+        "dataset": dataset,
+        "total_patients": len(patients),
+        "total_probes": len(probes),
+        "row_offset": row_offset,
+        "column_offset": column_offset,
+        "patients": [str(value) for value in window.index],
+        "probes": [str(value) for value in window.columns],
+        "values": [[float(value) for value in row] for row in window.to_numpy()],
+    }
+
+
+@app.get("/api/expression-preview", response_model=ExpressionPreviewResponse)
+def expression_preview(
+    dataset: str = Query(default="GSE25055", pattern="^GSE250(55|65)$"),
+    patient_search: str | None = Query(default=None, max_length=64),
+    probe_search: str | None = Query(default=None, max_length=64),
+    row_offset: int = Query(default=0, ge=0, le=500),
+    row_limit: int = Query(default=8, ge=1, le=20),
+    column_offset: int = Query(default=0, ge=0, le=22282),
+    column_limit: int = Query(default=8, ge=1, le=20),
+):
+    return _expression_window(
+        dataset, patient_search, probe_search, row_offset, row_limit,
+        column_offset, column_limit,
+    )
+
+
+@app.get("/api/expression-preview/export", response_class=Response)
+def export_expression_preview(
+    dataset: str = Query(default="GSE25055", pattern="^GSE250(55|65)$"),
+    format: str = Query(default="csv", pattern="^(csv|xlsx)$"),
+    patient_search: str | None = Query(default=None, max_length=64),
+    probe_search: str | None = Query(default=None, max_length=64),
+    row_offset: int = Query(default=0, ge=0, le=500),
+    row_limit: int = Query(default=8, ge=1, le=20),
+    column_offset: int = Query(default=0, ge=0, le=22282),
+    column_limit: int = Query(default=8, ge=1, le=20),
+):
+    payload = _expression_window(
+        dataset, patient_search, probe_search, row_offset, row_limit,
+        column_offset, column_limit,
+    )
+    frame = pd.DataFrame(
+        payload["values"], index=payload["patients"], columns=payload["probes"]
+    )
+    frame.index.name = "patient_id"
+    if format == "xlsx":
+        binary = io.BytesIO()
+        with pd.ExcelWriter(binary, engine="openpyxl") as writer:
+            frame.to_excel(writer, sheet_name="expression_window")
+        content = binary.getvalue()
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        content = frame.to_csv()
+        media_type = "text/csv; charset=utf-8"
+    return Response(content=content, media_type=media_type, headers={
+        "Content-Disposition": f'attachment; filename="{dataset}-expression-window.{format}"'
+    })
 
 
 @app.get("/api/preprocessing", response_model=list[PreprocessingStepResponse])
@@ -504,8 +724,14 @@ def predictions(
     experiment: str,
     model: str | None = None,
     actual_class: int | None = Query(default=None, ge=0, le=1),
+    predicted_class: int | None = Query(default=None, ge=0, le=1),
+    correct: bool | None = None,
+    disagreement: bool | None = None,
+    minimum_probability: float | None = Query(default=None, ge=0, le=1),
+    maximum_probability: float | None = Query(default=None, ge=0, le=1),
     fold: int | None = Query(default=None, ge=1, le=10),
     search: str | None = Query(default=None, max_length=64),
+    sort_by: str = Query(default="probability", pattern="^(patient_id|probability|actual_class|predicted_class)$"),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
@@ -516,6 +742,19 @@ def predictions(
         .join(ModelRun, PredictionRecord.model_run_id == ModelRun.id)
         .join(Experiment, ModelRun.experiment_id == Experiment.id)
         .where(Experiment.slug == experiment)
+    )
+    other_prediction = aliased(PredictionRecord)
+    other_run = aliased(ModelRun)
+    disagreement_exists = exists(
+        select(1)
+        .select_from(other_prediction)
+        .join(other_run, other_prediction.model_run_id == other_run.id)
+        .where(
+            other_prediction.patient_id == PredictionRecord.patient_id,
+            other_run.experiment_id == Experiment.id,
+            other_prediction.model_run_id != PredictionRecord.model_run_id,
+            other_prediction.predicted_class != PredictionRecord.predicted_class,
+        )
     )
     count_query = (
         select(func.count(PredictionRecord.id))
@@ -529,25 +768,50 @@ def predictions(
         filters.append(ModelRun.model_key == model)
     if actual_class is not None:
         filters.append(PredictionRecord.actual_class == actual_class)
+    if predicted_class is not None:
+        filters.append(PredictionRecord.predicted_class == predicted_class)
+    if correct is not None:
+        comparison_filter = PredictionRecord.actual_class == PredictionRecord.predicted_class
+        filters.append(comparison_filter if correct else ~comparison_filter)
+    if minimum_probability is not None:
+        filters.append(PredictionRecord.probability >= minimum_probability)
+    if maximum_probability is not None:
+        filters.append(PredictionRecord.probability <= maximum_probability)
     if fold is not None:
         filters.append(PredictionRecord.validation_fold == fold)
     if search and search.strip():
         filters.append(PredictionRecord.patient_id.ilike(f"%{search.strip()}%"))
+    if disagreement is not None:
+        filters.append(disagreement_exists if disagreement else ~disagreement_exists)
     if filters:
         query = query.where(*filters)
         count_query = count_query.where(*filters)
 
-    ordering = (
-        PredictionRecord.probability.desc()
-        if sort_order == "desc" else PredictionRecord.probability.asc()
-    )
+    sort_columns = {
+        "patient_id": PredictionRecord.patient_id,
+        "probability": PredictionRecord.probability,
+        "actual_class": PredictionRecord.actual_class,
+        "predicted_class": PredictionRecord.predicted_class,
+    }
+    sort_column = sort_columns[sort_by]
+    ordering = sort_column.desc() if sort_order == "desc" else sort_column.asc()
     rows = session.execute(
         query.order_by(ordering, PredictionRecord.patient_id)
         .offset(offset).limit(limit)
     ).all()
 
+    total = session.scalar(count_query) or 0
+    correct_count = session.scalar(count_query.where(
+        PredictionRecord.actual_class == PredictionRecord.predicted_class
+    )) or 0
+    disagreement_count = session.scalar(
+        count_query.where(disagreement_exists)
+    ) or 0
     return {
-        "total": session.scalar(count_query) or 0,
+        "total": total,
+        "correct": correct_count,
+        "incorrect": total - correct_count,
+        "disagreements": disagreement_count,
         "offset": offset,
         "limit": limit,
         "items": [
@@ -751,6 +1015,8 @@ def _final_probe_ids(session):
 )
 def feature_stability(
     search: str | None = Query(default=None, max_length=100),
+    minimum_frequency: int = Query(default=1, ge=1, le=10),
+    final_only: bool = False,
     limit: int = Query(default=20, ge=1, le=100),
     session: Session = Depends(get_session),
 ):
@@ -766,6 +1032,7 @@ def feature_stability(
         )
         .join(ProbeAnnotation)
         .where(SelectedFeature.experiment_id == experiment.id)
+        .where(SelectedFeature.selected_folds >= minimum_frequency)
         .distinct()
     )
     if search and search.strip():
@@ -774,13 +1041,15 @@ def feature_stability(
             SelectedFeature.probe_id.ilike(pattern)
             | ProbeAnnotation.gene_symbol.ilike(pattern)
         )
+    final_probes = _final_probe_ids(session)
+    if final_only:
+        query = query.where(SelectedFeature.probe_id.in_(final_probes))
     rows = session.execute(
         query.order_by(
             SelectedFeature.selection_frequency.desc(),
             SelectedFeature.probe_id
         ).limit(limit)
     ).all()
-    final_probes = _final_probe_ids(session)
     return [
         {
             "probe_id": row.probe_id,
@@ -802,19 +1071,32 @@ def feature_stability(
 )
 def feature_heatmap(
     limit: int = Query(default=24, ge=5, le=40),
+    minimum_frequency: int = Query(default=1, ge=1, le=10),
+    search: str | None = Query(default=None, max_length=100),
     session: Session = Depends(get_session),
 ):
     experiment = require_experiment(session, "lasso-logistic-nested-cv")
-    top = session.execute(
+    top_query = (
         select(
             SelectedFeature.probe_id,
             ProbeAnnotation.gene_symbol,
             SelectedFeature.selection_frequency,
         )
         .join(ProbeAnnotation)
-        .where(SelectedFeature.experiment_id == experiment.id)
+        .where(
+            SelectedFeature.experiment_id == experiment.id,
+            SelectedFeature.selected_folds >= minimum_frequency,
+        )
         .distinct()
-        .order_by(
+    )
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        top_query = top_query.where(
+            SelectedFeature.probe_id.ilike(pattern)
+            | ProbeAnnotation.gene_symbol.ilike(pattern)
+        )
+    top = session.execute(
+        top_query.order_by(
             SelectedFeature.selection_frequency.desc(),
             SelectedFeature.probe_id
         ).limit(limit)
@@ -835,6 +1117,29 @@ def feature_heatmap(
             "source_path": "results/lasso_selected_probes_by_fold.csv",
         })
     return records
+
+
+@app.get(
+    "/api/feature-frequency-distribution",
+    response_model=list[FrequencyBucketResponse],
+)
+def feature_frequency_distribution(session: Session = Depends(get_session)):
+    experiment = require_experiment(session, "lasso-logistic-nested-cv")
+    rows = session.execute(
+        select(SelectedFeature.probe_id, SelectedFeature.selected_folds)
+        .where(
+            SelectedFeature.experiment_id == experiment.id,
+            SelectedFeature.selected_folds.is_not(None),
+        )
+        .distinct()
+    ).all()
+    counts = {folds: 0 for folds in range(1, 11)}
+    for row in rows:
+        counts[row.selected_folds] += 1
+    return [
+        {"selected_folds": folds, "probe_count": counts[folds]}
+        for folds in range(1, 11)
+    ]
 
 
 REPORTS = [
@@ -933,12 +1238,11 @@ def export_report(report_key: str, session: Session = Depends(get_session)):
             .order_by(ModelRun.id)
         ).all()
         metric_keys = list(runs[0].overall_metrics)
-        writer.writerow(["model", "threshold", *metric_keys, "tn", "fp", "fn", "tp"])
+        writer.writerow(["model", *metric_keys, "tn", "fp", "fn", "tp"])
         for run in runs:
             matrix = run.confusion_matrix
             writer.writerow([
                 run.display_name,
-                run.configuration.get("classification_threshold"),
                 *[run.overall_metrics.get(key) for key in metric_keys],
                 matrix.get("true_negative"), matrix.get("false_positive"),
                 matrix.get("false_negative"), matrix.get("true_positive"),
@@ -1012,3 +1316,211 @@ def export_report(report_key: str, session: Session = Depends(get_session)):
             "Content-Disposition": f'attachment; filename="{report_key}.csv"'
         },
     )
+
+
+@app.get("/api/table-exports/{view}", response_class=Response)
+def export_filtered_table(
+    view: str,
+    format: str = Query(default="csv", pattern="^(csv|xlsx)$"),
+    experiment: str | None = None,
+    model: str | None = None,
+    cohort: str | None = Query(default=None, pattern="^(oof|external)$"),
+    fold: int | None = Query(default=None, ge=1, le=10),
+    actual_class: int | None = Query(default=None, ge=0, le=1),
+    predicted_class: int | None = Query(default=None, ge=0, le=1),
+    correct: bool | None = None,
+    disagreement: bool | None = None,
+    minimum_frequency: int = Query(default=1, ge=1, le=10),
+    final_only: bool = False,
+    minimum_probability: float | None = Query(default=None, ge=0, le=1),
+    maximum_probability: float | None = Query(default=None, ge=0, le=1),
+    search: str | None = Query(default=None, max_length=100),
+    session: Session = Depends(get_session),
+):
+    if view not in {"fold-results", "features", "feature-stability", "metrics", "predictions"}:
+        raise HTTPException(404, "Unknown table export.")
+    filters = {
+        key: value for key, value in {
+            "experiment": experiment, "model": model, "cohort": cohort,
+            "fold": fold,
+            "actual_class": actual_class, "predicted_class": predicted_class,
+            "correct": correct, "disagreement": disagreement,
+            "minimum_frequency": minimum_frequency,
+            "final_only": final_only,
+            "minimum_probability": minimum_probability,
+            "maximum_probability": maximum_probability, "search": search,
+        }.items() if value not in (None, "")
+    }
+
+    if view == "fold-results":
+        query = (
+            select(FoldMetric, ModelRun, Experiment)
+            .select_from(FoldMetric)
+            .join(ModelRun, FoldMetric.model_run_id == ModelRun.id)
+            .join(Experiment, ModelRun.experiment_id == Experiment.id)
+        )
+        if experiment:
+            query = query.where(Experiment.slug == experiment)
+        if model:
+            query = query.where(ModelRun.model_key == model)
+        if fold:
+            query = query.where(FoldMetric.fold == fold)
+        records = [{
+            "experiment": exp.slug, "model": run.model_key, "fold": item.fold,
+            "training_patients": item.training_patient_count,
+            "validation_patients": item.validation_patient_count,
+            "selected_probes": item.selected_probe_count,
+            **item.metrics,
+            "parameters": json.dumps(item.selected_parameters, ensure_ascii=False),
+        } for item, run, exp in session.execute(query.order_by(Experiment.id, ModelRun.id, FoldMetric.fold))]
+    elif view == "feature-stability":
+        feature_experiment = require_experiment(session, "lasso-logistic-nested-cv")
+        query = (
+            select(
+                SelectedFeature.probe_id, ProbeAnnotation.gene_symbol,
+                SelectedFeature.selected_folds,
+                SelectedFeature.selection_frequency,
+                SelectedFeature.mean_coefficient,
+            )
+            .join(ProbeAnnotation)
+            .where(
+                SelectedFeature.experiment_id == feature_experiment.id,
+                SelectedFeature.selected_folds >= minimum_frequency,
+            )
+            .distinct()
+        )
+        if fold:
+            selected_in_fold = select(SelectedFeature.probe_id).where(
+                SelectedFeature.experiment_id == feature_experiment.id,
+                SelectedFeature.fold == fold,
+            )
+            query = query.where(SelectedFeature.probe_id.in_(selected_in_fold))
+        if search and search.strip():
+            pattern = f"%{search.strip()}%"
+            query = query.where(
+                SelectedFeature.probe_id.ilike(pattern)
+                | ProbeAnnotation.gene_symbol.ilike(pattern)
+            )
+        final_probes = _final_probe_ids(session)
+        if final_only:
+            query = query.where(SelectedFeature.probe_id.in_(final_probes))
+        records = [{
+            "probe_id": row.probe_id, "gene_symbol": row.gene_symbol,
+            "selected_folds": row.selected_folds,
+            "selection_frequency": row.selection_frequency,
+            "mean_coefficient": row.mean_coefficient,
+            "final_model_member": row.probe_id in final_probes,
+        } for row in session.execute(query.order_by(
+            SelectedFeature.selection_frequency.desc(), SelectedFeature.probe_id
+        ))]
+    elif view == "features":
+        query = (
+            select(SelectedFeature, ProbeAnnotation, Experiment)
+            .select_from(SelectedFeature)
+            .join(ProbeAnnotation, SelectedFeature.probe_id == ProbeAnnotation.probe_id)
+            .join(Experiment, SelectedFeature.experiment_id == Experiment.id)
+        )
+        if experiment:
+            query = query.where(Experiment.slug == experiment)
+        if fold:
+            query = query.where(SelectedFeature.fold == fold)
+        if search and search.strip():
+            pattern = f"%{search.strip()}%"
+            query = query.where(SelectedFeature.probe_id.ilike(pattern) | ProbeAnnotation.gene_symbol.ilike(pattern))
+        records = [{
+            "experiment": exp.slug, "probe_id": item.probe_id,
+            "gene_symbol": annotation.gene_symbol, "gene_name": annotation.gene_name,
+            "context": item.selection_context, "fold": item.fold,
+            "coefficient": item.coefficient, "mean_coefficient": item.mean_coefficient,
+            "selected_folds": item.selected_folds, "selection_frequency": item.selection_frequency,
+        } for item, annotation, exp in session.execute(query.order_by(Experiment.id, SelectedFeature.id))]
+    elif view == "metrics":
+        selected_slug = (
+            "locked-external-validation-gse25065"
+            if cohort == "external" else "balanced-rf-nested-cv"
+        )
+        query = (
+            select(ModelRun, Experiment)
+            .select_from(ModelRun)
+            .join(Experiment, ModelRun.experiment_id == Experiment.id)
+            .where(Experiment.slug == selected_slug)
+        )
+        if model and model != "comparison":
+            query = query.where(ModelRun.model_key == model)
+        records = []
+        for run, exp in session.execute(query.order_by(ModelRun.model_key)):
+            matrix = run.confusion_matrix
+            records.append({
+                "cohort": exp.dataset.accession,
+                "model": run.model_key,
+                **run.overall_metrics,
+                "tn": matrix.get("true_negative", matrix.get("tn")),
+                "fp": matrix.get("false_positive", matrix.get("fp")),
+                "fn": matrix.get("false_negative", matrix.get("fn")),
+                "tp": matrix.get("true_positive", matrix.get("tp")),
+            })
+    else:
+        query = (
+            select(PredictionRecord, ModelRun, Experiment)
+            .select_from(PredictionRecord)
+            .join(ModelRun, PredictionRecord.model_run_id == ModelRun.id)
+            .join(Experiment, ModelRun.experiment_id == Experiment.id)
+        )
+        if experiment:
+            query = query.where(Experiment.slug == experiment)
+        if model:
+            query = query.where(ModelRun.model_key == model)
+        if fold:
+            query = query.where(PredictionRecord.validation_fold == fold)
+        if actual_class is not None:
+            query = query.where(PredictionRecord.actual_class == actual_class)
+        if predicted_class is not None:
+            query = query.where(PredictionRecord.predicted_class == predicted_class)
+        if correct is not None:
+            match = PredictionRecord.actual_class == PredictionRecord.predicted_class
+            query = query.where(match if correct else ~match)
+        if minimum_probability is not None:
+            query = query.where(PredictionRecord.probability >= minimum_probability)
+        if maximum_probability is not None:
+            query = query.where(PredictionRecord.probability <= maximum_probability)
+        if search and search.strip():
+            query = query.where(PredictionRecord.patient_id.ilike(f"%{search.strip()}%"))
+        if disagreement is not None:
+            other_prediction = aliased(PredictionRecord)
+            other_run = aliased(ModelRun)
+            disagreement_exists = exists(
+                select(1).select_from(other_prediction)
+                .join(other_run, other_prediction.model_run_id == other_run.id)
+                .where(
+                    other_prediction.patient_id == PredictionRecord.patient_id,
+                    other_run.experiment_id == Experiment.id,
+                    other_prediction.model_run_id != PredictionRecord.model_run_id,
+                    other_prediction.predicted_class != PredictionRecord.predicted_class,
+                )
+            )
+            query = query.where(disagreement_exists if disagreement else ~disagreement_exists)
+        records = [{
+            "experiment": exp.slug, "model": run.model_key,
+            "patient_id": item.patient_id, "actual_class": item.actual_class,
+            "predicted_class": item.predicted_class, "probability": item.probability,
+            "validation_fold": item.validation_fold,
+        } for item, run, exp in session.execute(query.order_by(PredictionRecord.patient_id, ModelRun.model_key))]
+
+    frame = pd.DataFrame(records)
+    identity = "_".join(str(filters.get(key, "all")) for key in ("experiment", "model"))
+    filename = f"{identity}_{view}_{date.today().isoformat()}.{format}"
+    filter_header = json.dumps(filters, ensure_ascii=False, sort_keys=True)
+    if format == "xlsx":
+        binary = io.BytesIO()
+        with pd.ExcelWriter(binary, engine="openpyxl") as writer:
+            frame.to_excel(writer, index=False, sheet_name="data")
+            pd.DataFrame([{"filters": filter_header}]).to_excel(writer, index=False, sheet_name="metadata")
+        content = binary.getvalue()
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        content = frame.to_csv(index=False)
+        media_type = "text/csv; charset=utf-8"
+    return Response(content=content, media_type=media_type, headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Export-Filters": filter_header.encode("ascii", "backslashreplace").decode("ascii"),
+    })

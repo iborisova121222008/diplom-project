@@ -1,7 +1,7 @@
 import type {
   Comparison, Curves, CvModel, Dataset, Disagreement, Experiment, Feature,
-  FeatureHeatmap, FeatureStability, FinalValidation, FoldSimilarity, Page,
-  Prediction, Report, WorkflowStep,
+  FeatureHeatmap, FeatureStability, FinalValidation, FoldSimilarity, FrequencyBucket, Page,
+  ExpressionPreview, ForestManifest, ForestStructure, Prediction, Report, WorkflowStep,
 } from './types'
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
@@ -25,15 +25,22 @@ function query(path: string, values: Record<string, string | number | undefined>
 
 export const api = {
   datasets: () => request<Dataset[]>('/datasets'),
+  expressionPreview: (values: Record<string, string | number | undefined>) =>
+    request<ExpressionPreview>(query('/expression-preview', values)),
+  expressionExportUrl: (values: Record<string, string | number | undefined>) =>
+    `${API_BASE}${query('/expression-preview/export', values)}`,
   workflow: () => request<WorkflowStep[]>('/preprocessing'),
   experiments: (filters: Record<string, string> = {}) =>
     request<Experiment[]>(query('/experiments', filters)),
   features: (values: Record<string, string | number | undefined>) =>
     request<Page<Feature>>(query('/features', values)),
-  featureStability: (limit = 16) =>
-    request<FeatureStability[]>(`/feature-stability?limit=${limit}`),
-  featureHeatmap: (limit = 18) =>
-    request<FeatureHeatmap[]>(`/feature-heatmap?limit=${limit}`),
+  featureStability: (values: Record<string, string | number | undefined> = {}) =>
+    request<FeatureStability[]>(query('/feature-stability', values)),
+  featureHeatmap: (limit = 18, minimumFrequency = 1, search = '') =>
+    request<FeatureHeatmap[]>(query('/feature-heatmap', {
+      limit, minimum_frequency: minimumFrequency, search,
+    })),
+  featureFrequency: () => request<FrequencyBucket[]>('/feature-frequency-distribution'),
   similarities: () => request<FoldSimilarity[]>('/fold-feature-similarity'),
   cvResults: (model?: string) =>
     request<CvModel[]>(query('/cv-results', { model })),
@@ -48,5 +55,13 @@ export const api = {
       experiment, offset, limit,
     })),
   reports: () => request<Report[]>('/reports'),
+  forestManifest: () => request<ForestManifest>('/forest/manifest'),
+  forestStructure: (implementation: string, tree: number, depth: number) =>
+    request<ForestStructure>(query('/forest/structure', {
+      implementation, tree_index: tree, visible_depth: depth,
+    })),
+  forestTreeUrl: (tree: number) => `${API_BASE}/forest/trees/${tree}`,
+  tableExportUrl: (view: string, values: Record<string, string | number | undefined>) =>
+    `${API_BASE}${query(`/table-exports/${view}`, values)}`,
   exportUrl: (path: string) => `${API_BASE.replace(/\/api$/, '')}${path}`,
 }
