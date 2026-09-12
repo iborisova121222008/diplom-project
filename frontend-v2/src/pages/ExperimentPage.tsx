@@ -26,7 +26,7 @@ function Header({ title, purpose }: { title: string; purpose: string }) {
 }
 
 function Exports({ csv, xlsx }: { csv: string; xlsx: string }) {
-  return <span className="exports"><a href={csv}>CSV</a><a href={xlsx}>XLSX</a></span>
+  return <span className="exports"><button type="button" onClick={() => void api.download(csv)}>CSV</button><button type="button" onClick={() => void api.download(xlsx)}>XLSX</button></span>
 }
 
 function InputTab() {

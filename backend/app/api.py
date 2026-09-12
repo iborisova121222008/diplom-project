@@ -5,16 +5,19 @@ import math
 from datetime import date
 
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_, exists, func, select, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, aliased, selectinload
 from sklearn.metrics import precision_recall_curve, roc_curve
 
-from app.config import FRONTEND_ORIGINS, PROJECT_DIR
 from app.artifacts import ArtifactReader
+from app.auth import create_access_token, hash_password, require_researcher, verify_password
+from app.config import FRONTEND_ORIGINS, PROJECT_DIR
 from app.database import get_session
 from app.models import (
     Dataset,
@@ -25,6 +28,7 @@ from app.models import (
     PredictionRecord,
     ProbeAnnotation,
     SelectedFeature,
+    User,
 )
 from app.schemas import (
     ComparisonResponse,
@@ -43,10 +47,15 @@ from app.schemas import (
     ForestManifestResponse,
     ForestStructureResponse,
     HealthResponse,
+    LoginRequest,
     ModelResponse,
+    PASSWORD_VALIDATION_MESSAGE,
     PredictionPageResponse,
     PreprocessingStepResponse,
     ReportResponse,
+    RESEARCHER_ID_VALIDATION_MESSAGE,
+    RegistrationRequest,
+    TokenResponse,
 )
 
 
@@ -81,12 +90,13 @@ app = FastAPI(
         "results. No prediction or patient-data input is provided."
     )
 )
+scientific_api = APIRouter(dependencies=[Depends(require_researcher)])
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"]
 )
 
@@ -102,6 +112,87 @@ async def database_error_handler(_request, _error):
             )
         }
     )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, error: RequestValidationError):
+    if request.url.path in {"/api/auth/register", "/api/auth/login"}:
+        password_error = any(
+            item.get("loc", ())[-1:] == ("password",)
+            for item in error.errors()
+        )
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": (
+                    PASSWORD_VALIDATION_MESSAGE
+                    if password_error
+                    else RESEARCHER_ID_VALIDATION_MESSAGE
+                )
+            },
+        )
+    return await request_validation_exception_handler(request, error)
+
+
+@app.post(
+    "/api/auth/register",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def register(credentials: RegistrationRequest, session: Session = Depends(get_session)):
+    existing = session.scalar(
+        select(User).where(
+            func.lower(User.researcher_id) == credentials.researcher_id
+        )
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Този Researcher ID вече е регистриран.",
+        )
+
+    user = User(
+        researcher_id=credentials.researcher_id,
+        password_hash=hash_password(credentials.password),
+    )
+    session.add(user)
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Този Researcher ID вече е регистриран.",
+        ) from error
+    session.refresh(user)
+    return {
+        "access_token": create_access_token(user.researcher_id),
+        "token_type": "bearer",
+        "researcher_id": user.researcher_id,
+    }
+
+
+@app.post("/api/auth/login", response_model=TokenResponse)
+def login(credentials: LoginRequest, session: Session = Depends(get_session)):
+    user = session.scalar(
+        select(User).where(
+            func.lower(User.researcher_id) == credentials.researcher_id
+        )
+    )
+    if user is None or not verify_password(
+        credentials.password,
+        user.password_hash,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Невалиден Researcher ID или парола.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {
+        "access_token": create_access_token(user.researcher_id),
+        "token_type": "bearer",
+        "researcher_id": user.researcher_id,
+    }
 
 
 def require_experiment(session, slug):
@@ -134,12 +225,12 @@ def read_tree_manifest():
     return manifest
 
 
-@app.get("/api/forest/manifest", response_model=ForestManifestResponse)
+@scientific_api.get("/api/forest/manifest", response_model=ForestManifestResponse)
 def forest_manifest():
     return read_tree_manifest()
 
 
-@app.get("/api/forest/trees/{tree_index}", response_class=Response)
+@scientific_api.get("/api/forest/trees/{tree_index}", response_class=Response)
 def forest_tree(tree_index: int):
     if tree_index < 1 or tree_index > 30:
         raise HTTPException(404, "Tree index must be between 1 and 30.")
@@ -175,7 +266,7 @@ def _custom_tree_details(root):
     return maximum_depth, node_count
 
 
-@app.get("/api/forest/structure", response_model=ForestStructureResponse)
+@scientific_api.get("/api/forest/structure", response_model=ForestStructureResponse)
 def forest_structure(
     implementation: str = Query(default="custom", pattern="^(custom|sklearn)$"),
     tree_index: int = Query(default=1, ge=1, le=30),
@@ -237,7 +328,7 @@ def forest_structure(
     }
 
 
-@app.get("/api/health", response_model=HealthResponse)
+@scientific_api.get("/api/health", response_model=HealthResponse)
 def health(session: Session = Depends(get_session)):
     session.execute(text("SELECT 1"))
     return {
@@ -247,7 +338,7 @@ def health(session: Session = Depends(get_session)):
     }
 
 
-@app.get("/api/datasets", response_model=list[DatasetResponse])
+@scientific_api.get("/api/datasets", response_model=list[DatasetResponse])
 def datasets(session: Session = Depends(get_session)):
     records = session.scalars(
         select(Dataset).order_by(Dataset.accession)
@@ -303,7 +394,7 @@ def _expression_window(
     }
 
 
-@app.get("/api/expression-preview", response_model=ExpressionPreviewResponse)
+@scientific_api.get("/api/expression-preview", response_model=ExpressionPreviewResponse)
 def expression_preview(
     dataset: str = Query(default="GSE25055", pattern="^GSE250(55|65)$"),
     patient_search: str | None = Query(default=None, max_length=64),
@@ -319,7 +410,7 @@ def expression_preview(
     )
 
 
-@app.get("/api/expression-preview/export", response_class=Response)
+@scientific_api.get("/api/expression-preview/export", response_class=Response)
 def export_expression_preview(
     dataset: str = Query(default="GSE25055", pattern="^GSE250(55|65)$"),
     format: str = Query(default="csv", pattern="^(csv|xlsx)$"),
@@ -352,7 +443,7 @@ def export_expression_preview(
     })
 
 
-@app.get("/api/preprocessing", response_model=list[PreprocessingStepResponse])
+@scientific_api.get("/api/preprocessing", response_model=list[PreprocessingStepResponse])
 def preprocessing(session: Session = Depends(get_session)):
     dataset = session.scalar(
         select(Dataset).where(Dataset.accession == "GSE25055")
@@ -364,7 +455,7 @@ def preprocessing(session: Session = Depends(get_session)):
     return dataset.methodology
 
 
-@app.get("/api/features", response_model=FeaturePageResponse)
+@scientific_api.get("/api/features", response_model=FeaturePageResponse)
 def features(
     experiment: str = Query(default="lasso-logistic-nested-cv"),
     fold: int | None = Query(default=None, ge=1, le=10),
@@ -464,7 +555,7 @@ def features(
     }
 
 
-@app.get("/api/models", response_model=list[ModelResponse])
+@scientific_api.get("/api/models", response_model=list[ModelResponse])
 def models(session: Session = Depends(get_session)):
     cv_runs = session.scalars(
         select(ModelRun).join(Experiment)
@@ -530,7 +621,7 @@ def models(session: Session = Depends(get_session)):
     return response
 
 
-@app.get("/api/cv-results", response_model=list[CvModelResponse])
+@scientific_api.get("/api/cv-results", response_model=list[CvModelResponse])
 def cv_results(
     model: str | None = None,
     session: Session = Depends(get_session)
@@ -594,7 +685,7 @@ def cv_results(
     ]
 
 
-@app.get("/api/comparison", response_model=list[ComparisonResponse])
+@scientific_api.get("/api/comparison", response_model=list[ComparisonResponse])
 def comparison(session: Session = Depends(get_session)):
     runs = session.scalars(
         select(ModelRun).join(Experiment)
@@ -622,7 +713,7 @@ def comparison(session: Session = Depends(get_session)):
     ]
 
 
-@app.get("/api/final-validation", response_model=FinalValidationResponse)
+@scientific_api.get("/api/final-validation", response_model=FinalValidationResponse)
 def final_validation(session: Session = Depends(get_session)):
     experiment = require_experiment(
         session, "locked-external-validation-gse25065"
@@ -664,7 +755,7 @@ def final_validation(session: Session = Depends(get_session)):
     }
 
 
-@app.get("/api/experiments", response_model=list[ExperimentResponse])
+@scientific_api.get("/api/experiments", response_model=list[ExperimentResponse])
 def experiments(
     dataset: str | None = None,
     evaluation_stage: str | None = None,
@@ -719,7 +810,7 @@ def experiments(
     ]
 
 
-@app.get("/api/predictions", response_model=PredictionPageResponse)
+@scientific_api.get("/api/predictions", response_model=PredictionPageResponse)
 def predictions(
     experiment: str,
     model: str | None = None,
@@ -831,7 +922,7 @@ def predictions(
     }
 
 
-@app.get("/api/curves", response_model=CurvesResponse)
+@scientific_api.get("/api/curves", response_model=CurvesResponse)
 def curves(
     experiment: str,
     session: Session = Depends(get_session),
@@ -920,7 +1011,7 @@ def curves(
     }
 
 
-@app.get(
+@scientific_api.get(
     "/api/model-disagreements",
     response_model=DisagreementPageResponse
 )
@@ -976,7 +1067,7 @@ def model_disagreements(
     }
 
 
-@app.get(
+@scientific_api.get(
     "/api/fold-feature-similarity",
     response_model=list[FoldSimilarityResponse]
 )
@@ -1009,7 +1100,7 @@ def _final_probe_ids(session):
     ))
 
 
-@app.get(
+@scientific_api.get(
     "/api/feature-stability",
     response_model=list[FeatureStabilityResponse]
 )
@@ -1065,7 +1156,7 @@ def feature_stability(
     ]
 
 
-@app.get(
+@scientific_api.get(
     "/api/feature-heatmap",
     response_model=list[FeatureHeatmapResponse]
 )
@@ -1119,7 +1210,7 @@ def feature_heatmap(
     return records
 
 
-@app.get(
+@scientific_api.get(
     "/api/feature-frequency-distribution",
     response_model=list[FrequencyBucketResponse],
 )
@@ -1202,7 +1293,7 @@ REPORTS = [
 ]
 
 
-@app.get("/api/reports", response_model=list[ReportResponse])
+@scientific_api.get("/api/reports", response_model=list[ReportResponse])
 def reports():
     return [
         {**item, "download_url": f"/api/exports/{item['key']}"}
@@ -1210,7 +1301,7 @@ def reports():
     ]
 
 
-@app.get("/api/exports/{report_key}", response_class=Response)
+@scientific_api.get("/api/exports/{report_key}", response_class=Response)
 def export_report(report_key: str, session: Session = Depends(get_session)):
     if report_key not in {item["key"] for item in REPORTS}:
         raise HTTPException(404, "Unknown report.")
@@ -1318,7 +1409,7 @@ def export_report(report_key: str, session: Session = Depends(get_session)):
     )
 
 
-@app.get("/api/table-exports/{view}", response_class=Response)
+@scientific_api.get("/api/table-exports/{view}", response_class=Response)
 def export_filtered_table(
     view: str,
     format: str = Query(default="csv", pattern="^(csv|xlsx)$"),
@@ -1524,3 +1615,6 @@ def export_filtered_table(
         "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Export-Filters": filter_header.encode("ascii", "backslashreplace").decode("ascii"),
     })
+
+
+app.include_router(scientific_api)

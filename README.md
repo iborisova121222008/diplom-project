@@ -120,6 +120,8 @@ Expected form inside `backend/.env`:
 ```text
 DATABASE_URL=postgresql+psycopg://diplom_app:<password>@localhost:5432/diplom_project
 FRONTEND_ORIGIN=http://localhost:5173
+JWT_SECRET=<generate-a-long-random-secret>
+JWT_ACCESS_TOKEN_MINUTES=60
 ```
 
 Never commit `backend/.env`. The root `.env`, `backend/.env`, and
@@ -176,7 +178,8 @@ python -m alembic -c alembic.ini upgrade head
 
 Do not stamp an empty or unverified database. The migrations preserve the six
 scientific tables and add only `prediction_records` and
-`fold_feature_similarity`; Alembic also owns its technical
+`fold_feature_similarity`. The authentication migration adds only the
+independent `users` table; Alembic also owns its technical
 `alembic_version` table.
 
 ### 5. Import canonical artifacts
@@ -214,15 +217,23 @@ Copy-Item .env.example .env
 npm run dev
 ```
 
+Open `http://localhost:5173`, choose `Към регистрация`, and register the
+first researcher with a Researcher ID. Passwords are 8–128 characters and must
+contain a lowercase letter, uppercase letter, digit, and one character from
+`!@#$%^&*()_+-=[]{};':"\|,.<>/?`. Registration signs the researcher in
+immediately.
+
 ## Local URLs
 
 - API: `http://localhost:8000`
 - Swagger/OpenAPI: `http://localhost:8000/docs`
 - React dashboard: `http://localhost:5173`
 
-## Read-only API
+## Authenticated API
 
 ```text
+POST /api/auth/register
+POST /api/auth/login
 GET /api/health
 GET /api/datasets
 GET /api/expression-preview

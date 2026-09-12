@@ -6,14 +6,39 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Index,
     JSON,
     String,
     Text,
-    UniqueConstraint
+    UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    researcher_id: Mapped[str] = mapped_column(
+        String(50),
+    )
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_users_researcher_id_lower",
+            func.lower(researcher_id),
+            unique=True,
+        ),
+    )
 
 
 class Dataset(Base):

@@ -1,7 +1,47 @@
 from datetime import datetime
+import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+RESEARCHER_ID_VALIDATION_MESSAGE = (
+    "Researcher ID трябва да е 3–50 знака, да започва с буква или цифра "
+    "и да съдържа само букви, цифри, ., _ и -."
+)
+PASSWORD_VALIDATION_MESSAGE = (
+    "Паролата трябва да съдържа поне 8 символа, малка и главна буква, "
+    "цифра и специален символ."
+)
+PASSWORD_SPECIAL_CHARACTERS = "!@#$%^&*()_+-=[]{};':\"\\|,.<>/?"
+
+
+def normalize_researcher_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError(RESEARCHER_ID_VALIDATION_MESSAGE)
+    normalized = value.strip().lower()
+    if not 3 <= len(normalized) <= 50 or not re.fullmatch(
+        r"[^\W_][\w.-]*",
+        normalized,
+    ):
+        raise ValueError(RESEARCHER_ID_VALIDATION_MESSAGE)
+    return normalized
+
+
+def validate_registration_password(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError(PASSWORD_VALIDATION_MESSAGE)
+    valid = (
+        8 <= len(value) <= 128
+        and value == value.strip()
+        and any(character.islower() for character in value)
+        and any(character.isupper() for character in value)
+        and any(character.isdigit() for character in value)
+        and any(character in PASSWORD_SPECIAL_CHARACTERS for character in value)
+    )
+    if not valid:
+        raise ValueError(PASSWORD_VALIDATION_MESSAGE)
+    return value
 
 
 class ApiModel(BaseModel):
@@ -12,6 +52,37 @@ class HealthResponse(ApiModel):
     status: str
     database: str
     mode: str
+
+
+class RegistrationRequest(ApiModel):
+    researcher_id: str
+    password: str
+
+    @field_validator("researcher_id", mode="before")
+    @classmethod
+    def strip_researcher_id(cls, value: object) -> object:
+        return normalize_researcher_id(value)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def validate_password(cls, value: object) -> str:
+        return validate_registration_password(value)
+
+
+class LoginRequest(ApiModel):
+    researcher_id: str
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("researcher_id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        return normalize_researcher_id(value)
+
+
+class TokenResponse(ApiModel):
+    access_token: str
+    token_type: str
+    researcher_id: str
 
 
 class DatasetResponse(ApiModel):
