@@ -283,6 +283,11 @@ class FeatureHeatmapResponse(ApiModel):
     source_path: str
 
 
+class FrequencyBucketResponse(ApiModel):
+    selected_folds: int
+    probe_count: int
+
+
 class ReportResponse(ApiModel):
     key: str
     title: str
@@ -290,3 +295,43 @@ class ReportResponse(ApiModel):
     format: str
     download_url: str
     source_paths: list[str]
+
+
+class TreeFeatureUsageResponse(ApiModel):
+    probe_id: str
+    split_count: int
+    minimum_split_depth: float | None
+    mean_split_depth: float | None
+
+
+class TreeSummaryResponse(ApiModel):
+    tree_index: int
+    full_depth: int
+    node_count: int
+    generated_depth: int
+    used_probes: list[str]
+    feature_usage: list[TreeFeatureUsageResponse]
+    asset: str
+
+
+class ForestFeatureUsageResponse(ApiModel):
+    probe_id: str
+    trees_using: int
+    split_count: int
+    minimum_split_depth: float | None
+    mean_split_depth: float | None
+    tree_indices: list[int]
+
+
+class ForestManifestResponse(ApiModel):
+    derivation: str
+    generated_at_utc: str
+    model_package: str
+    model_package_identity: str
+    model_created_at_utc: str | None
+    tree_count: int
+    custom_tree_count: int
+    selected_probes: list[str]
+    generated_depth: int
+    trees: list[TreeSummaryResponse]
+    feature_usage: list[ForestFeatureUsageResponse]

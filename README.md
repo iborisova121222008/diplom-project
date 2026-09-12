@@ -240,11 +240,34 @@ GET /api/feature-stability
 GET /api/feature-heatmap
 GET /api/reports
 GET /api/exports/{report_key}
+GET /api/feature-frequency-distribution
+GET /api/forest/manifest
+GET /api/forest/trees/{tree_index}
+GET /api/table-exports/{view}
 ```
 
 The API does not accept expression matrices, artifact paths or patient data.
 It has no prediction route. It does not read scientific artifacts as a
 runtime fallback when PostgreSQL is unavailable.
+
+### Phase 3 tree visualization assets
+
+The Random Forest explorer uses deterministic, truncated SVG previews derived
+from the fixed locked model package. Generation reads the canonical Joblib
+file but performs no fit, tuning, threshold selection, or prediction update:
+
+```powershell
+$env:PYTHONPATH = "backend"
+python backend\scripts\generate_tree_previews.py
+```
+
+The script validates the ordered 15 probes, all 30 sklearn estimators, and all
+30 custom `TreeNode` roots. It writes only `backend/generated/tree_previews/`.
+The API serves one selected SVG on demand and exposes its structural manifest;
+these are derived visualization metadata, not new scientific results.
+
+Filtered research-table exports are available as CSV or XLSX. Applied filters
+are included in response metadata and in the XLSX metadata sheet.
 
 ## Automated checks
 
@@ -255,6 +278,7 @@ only by the test suite. They do not connect to native PostgreSQL:
 $env:PYTHONPATH = "backend"
 $env:PYTHONDONTWRITEBYTECODE = "1"
 python -m pytest backend\tests src\models\tests
+python backend\scripts\verify_phase3_integrity.py
 ```
 
 Frontend checks:

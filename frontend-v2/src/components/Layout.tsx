@@ -1,58 +1,51 @@
-import {
-  BookOpenCheck, Database, FileBarChart, FlaskConical, Home, Menu,
-  Network, SearchCode, X,
-} from 'lucide-react'
+import { BarChart3, Boxes, ChevronDown, Dna, FileDown, FlaskConical, Home, Menu, Network, PanelLeftClose, Trees, X } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { api } from '../api'
+import { useExploration } from '../context/ExplorationContext'
 
-const navigation = [
-  ['/', 'Начало', Home],
-  ['/overview', 'Изследователски преглед', BookOpenCheck],
-  ['/workflow', 'Работен процес', Network],
-  ['/experiments', 'Експерименти', FlaskConical],
-  ['/features', 'Характеристики', SearchCode],
-  ['/external-validation', 'Външна валидация', Database],
-  ['/reports', 'Отчети', FileBarChart],
+const groups = [
+  { label: '', items: [['/', 'Начало', Home]] },
+  { label: 'Резултати', items: [
+    ['/overview', 'Преглед', BarChart3], ['/experiments', 'Експерименти', FlaskConical],
+    ['/external-validation', 'Външна валидация', Boxes], ['/reports', 'Отчети и експорт', FileDown],
+  ] },
+  { label: 'ML процес', items: [
+    ['/process', 'Карта на процеса', Network], ['/process/nested-cv', 'Nested CV', PanelLeftClose],
+    ['/process/lasso', 'LASSO и стабилност', Dna], ['/process/forest', 'Random Forest', Trees],
+    ['/process/generalization', 'Генерализация', BarChart3],
+  ] },
 ] as const
 
 export function Layout() {
   const [open, setOpen] = useState(false)
   const location = useLocation()
-  const current = navigation.find(([path]) => path === location.pathname)
+  const { state, update } = useExploration()
+  const experiments = useQuery({ queryKey: ['experiments'], queryFn: () => api.experiments() })
+  const internal = location.pathname !== '/'
 
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Към основното съдържание</a>
-    <header className="mobile-header">
-      <NavLink to="/" className="brand-small">Молекулярен отговор</NavLink>
-      <button className="icon-button" onClick={() => setOpen(!open)} aria-label="Меню">
-        {open ? <X /> : <Menu />}
-      </button>
+    <header className="app-header">
+      <button className="icon-button mobile-only" onClick={() => setOpen(!open)} aria-label="Навигация">{open ? <X /> : <Menu />}</button>
+      <NavLink to="/" className="project-mark"><span>MR</span><strong>Молекулярен отговор</strong></NavLink>
+      {internal && <div className="global-context" aria-label="Активен контекст">
+        <label><span>Експеримент</span><select value={state.experiment} onChange={event => update({ experiment: event.target.value })}>
+          {(experiments.data ?? []).map(item => <option key={item.slug} value={item.slug}>{item.name}</option>)}
+        </select><ChevronDown size={13} /></label>
+        <label><span>Модел</span><select value={state.model} onChange={event => update({ model: event.target.value })}>
+          <option value="custom_random_forest">Custom RF</option><option value="sklearn_random_forest">Sklearn RF</option><option value="lasso_logistic">LASSO</option><option value="l2_logistic">L2 Logistic</option>
+        </select><ChevronDown size={13} /></label>
+        <code>{state.dataset}</code>
+      </div>}
     </header>
     <aside className={open ? 'sidebar open' : 'sidebar'}>
-      <NavLink to="/" className="brand" onClick={() => setOpen(false)}>
-        <span className="brand-mark"><FlaskConical size={21} /></span>
-        <span><small>Дипломно изследване</small>Молекулярен отговор</span>
-      </NavLink>
-      <nav aria-label="Основна навигация">
-        {navigation.map(([path, label, Icon]) => <NavLink
-          key={path}
-          to={path}
-          end={path === '/'}
-          onClick={() => setOpen(false)}
-          className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}
-        ><Icon size={17} />{label}</NavLink>)}
-      </nav>
-      <div className="research-note">
-        <span className="status-dot" />
-        <div><strong>Само за четене</strong><small>Завършени експерименти</small></div>
-      </div>
-      <p className="not-clinical">Изследователска система — не е клиничен инструмент.</p>
+      <nav aria-label="Основна навигация">{groups.map(group => <section key={group.label || 'home'}>
+        {group.label && <h2>{group.label}</h2>}
+        {group.items.map(([path, label, Icon]) => <NavLink key={path} to={path} end={path === '/' || path === '/process'} onClick={() => setOpen(false)} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}><Icon size={15} />{label}</NavLink>)}
+      </section>)}</nav>
     </aside>
-    <main id="main-content">
-      {location.pathname !== '/' && <div className="breadcrumb">
-        <NavLink to="/">Начало</NavLink><span>/</span><span>{current?.[1]}</span>
-      </div>}
-      <Outlet />
-    </main>
+    <main id="main-content"><Outlet /></main>
   </div>
 }

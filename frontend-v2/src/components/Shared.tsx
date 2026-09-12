@@ -31,7 +31,7 @@ export function EmptyState({ text = unavailableText }: { text?: string }) {
 export function SourceNote({ paths }: { paths: Array<string | null | undefined> }) {
   const visible = [...new Set(paths.filter(Boolean))] as string[]
   if (!visible.length) return null
-  return <p className="source-note"><strong>Източник на данните:</strong> {visible.join(' · ')}</p>
+  return <details className="metadata-drawer"><summary>Метаданни</summary><ul>{visible.map(path => <li key={path}><code>{path}</code></li>)}</ul></details>
 }
 
 export function TooltipTerm({ term, children }: { term: string; children: ReactNode }) {

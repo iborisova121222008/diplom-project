@@ -116,6 +116,13 @@ def test_fold_similarity_contains_all_pairs():
     assert len(response.json()) == 45
 
 
+def test_feature_frequency_distribution_covers_distinct_root_lasso_probes():
+    response = client.get("/api/feature-frequency-distribution")
+    assert response.status_code == 200
+    assert len(response.json()) == 10
+    assert sum(item["probe_count"] for item in response.json()) == 2015
+
+
 def test_external_compatibility_is_exposed_from_dataset_metadata():
     response = client.get("/api/datasets")
     external = next(
@@ -126,3 +133,42 @@ def test_external_compatibility_is_exposed_from_dataset_metadata():
         "probe_order_matches_development"
     ] is True
     assert external["compatibility_metadata"]["missing_final_probes"] == []
+
+
+def test_locked_forest_manifest_and_tree_assets_are_read_only():
+    manifest_response = client.get("/api/forest/manifest")
+    assert manifest_response.status_code == 200
+    manifest = manifest_response.json()
+    assert manifest["tree_count"] == 30
+    assert manifest["custom_tree_count"] == 30
+    assert len(manifest["trees"]) == 30
+    assert len(manifest["selected_probes"]) == 15
+    assert all(
+        probe in manifest["selected_probes"]
+        for tree in manifest["trees"]
+        for probe in tree["used_probes"]
+    )
+
+    tree_response = client.get("/api/forest/trees/1")
+    assert tree_response.status_code == 200
+    assert tree_response.headers["content-type"].startswith("image/svg+xml")
+    assert "<svg" in tree_response.text
+    assert client.get("/api/forest/trees/31").status_code == 404
+
+
+def test_filtered_table_exports_preserve_filters_and_support_xlsx():
+    csv_response = client.get(
+        "/api/table-exports/fold-results",
+        params={"model": "custom_random_forest", "fold": 3},
+    )
+    assert csv_response.status_code == 200
+    assert "custom_random_forest" in csv_response.text
+    assert "sklearn_random_forest" not in csv_response.text
+    assert "model" in csv_response.headers["x-export-filters"]
+
+    xlsx_response = client.get(
+        "/api/table-exports/features",
+        params={"experiment": "final-model-gse25055", "format": "xlsx"},
+    )
+    assert xlsx_response.status_code == 200
+    assert xlsx_response.content.startswith(b"PK")

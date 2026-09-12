@@ -1,78 +1,23 @@
 import { useQuery } from '@tanstack/react-query'
-import { ArrowRight, BookOpen, Dna, Microscope, ScanSearch } from 'lucide-react'
+import { ArrowRight, BarChart3, Network } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
+import { ErrorState, LoadingState } from '../components/Shared'
 import { bulgariaCancerFacts } from '../content/bulgariaCancerFacts'
-import { ErrorState, LoadingState, TooltipTerm } from '../components/Shared'
-
-const story = (featureCount?: number, externalCount?: number) => [
-  {
-    icon: Dna,
-    title: 'Биологични различия',
-    text: 'Една и съща диагноза не означава напълно еднаква биология на тумора. Разликите в активността на гените могат да бъдат свързани с начина, по който туморът реагира на лечението.',
-  },
-  {
-    icon: Microscope,
-    title: 'Генна експресия',
-    text: `За всяка пациентка са измерени ${featureCount?.toLocaleString('bg-BG') ?? '—'} сигнала за генна експресия. Всеки сигнал представя приблизителната активност на определен генен участък, измерена чрез Affymetrix probe set.\n\nРазглеждани поотделно, тези измервания трудно описват цялостното поведение на тумора. Заедно те образуват молекулярен профил, в който машинното обучение може да търси комбинации и закономерности, свързани с отговора към химиотерапията.`,
-  },
-  {
-    icon: ScanSearch,
-    title: 'Различен отговор към химиотерапията',
-    text: 'След химиотерапията при част от пациентките не се установява остатъчна инвазивна болест — пълен патологичен отговор, pCR. При други остава резидуална болест, RD.\n\nЦелта на експеримента е да се провери дали профилът на генна експресия преди лечението съдържа достатъчно информация за прогнозиране на тази разлика.',
-  },
-  {
-    icon: BookOpen,
-    title: 'AI-assisted predictor',
-    text: `Machine learning превръща хиляди молекулярни измервания в проверима прогноза. LASSO избира малък набор от информативни характеристики, а Random Forest търси комбинации между тях.\n\nЗаключеният модел се оценява върху независима група от ${externalCount ?? '—'} пациентки, които не са участвали в обучението, избора на характеристики, параметрите или прага за класификация.`,
-  },
-]
 
 export function HomePage() {
   const datasets = useQuery({ queryKey: ['datasets'], queryFn: api.datasets })
   if (datasets.isLoading) return <LoadingState />
   if (datasets.isError) return <ErrorState error={datasets.error} retry={() => datasets.refetch()} />
-
   const development = datasets.data?.find(item => item.accession === 'GSE25055')
   const external = datasets.data?.find(item => item.accession === 'GSE25065')
-
-  return <div className="landing-page">
-    <section className="hero">
-      <div className="hero-copy">
-        <p className="eyebrow">Мотивацията зад експеримента</p>
-        <h1>Една диагноза.<br />Различна биология.<br /><em>Различен отговор.</em></h1>
-        <p className="hero-text">Пациентки с една и съща диагноза могат да имат различни молекулярни профили и да реагират различно на една и съща химиотерапия. Прецизната онкология изследва дали тези биологични различия могат да помогнат да се предвиди при кои пациентки лечението има най-голяма вероятност да постигне пълен патологичен отговор.</p>
-        <div className="hero-actions">
-          <a href="#scientific-story" className="button primary">Проследи научната идея <ArrowRight size={17} /></a>
-          <Link to="/overview" className="button secondary">Отвори изследователския преглед</Link>
-        </div>
-      </div>
-    </section>
-
-    <section id="scientific-story" className="landing-section">
-      <p className="section-kicker">Научна идея</p>
-      <h2>Какво се опитва да предвиди изследването?</h2>
-      <div className="story-timeline">
-        {story(development?.feature_count, external?.included_patient_count).map(({ icon: Icon, title, text }, index) => <article key={title}>
-          <div className="timeline-number">{index + 1}</div>
-          <Icon size={22} /><h3>{title}</h3><p>{text}</p>
-          {index === 1 && <TooltipTerm term="Probe set е група от сонди върху микрочипа, използвана за измерване на генната експресия. Probe-set ID е характеристиката за модела, а gene symbol и gene name служат за биологична интерпретация.">Какво е probe set?</TooltipTerm>}
-        </article>)}
-      </div>
-    </section>
-
-    <section className="scale-section">
-      <div><strong>{development?.feature_count.toLocaleString('bg-BG')}</strong><span>сигнала за генна експресия за всяка пациентка</span></div>
-      <div><strong>{development?.included_patient_count}</strong><span>пациентки за разработване и кръстосана валидация, GSE25055</span></div>
-      <div><strong>{external?.included_patient_count}</strong><span>пациентки за заключена външна валидация, GSE25065; не са използвани при разработването</span></div>
-    </section>
-
-    <section className="landing-section context-section">
-      <div><p className="section-kicker">Контекст за България</p><h2>Ракът на гърдата остава важен общественоздравен въпрос</h2></div>
-      <div className="facts-grid">{bulgariaCancerFacts.map(fact => <article key={fact.label}>
-        <strong>{fact.value}</strong><p>{fact.label}</p><small>{fact.year}</small>
-      </article>)}</div>
-      <a className="source-link" href={bulgariaCancerFacts[0].sourceUrl} target="_blank" rel="noreferrer">{bulgariaCancerFacts[0].sourceName} <ArrowRight size={14} /></a>
-    </section>
+  return <div className="workspace-page home-workspace">
+    <header className="home-title"><span className="section-code">РАК НА ГЪРДАТА · ЗАВЪРШЕН ML ЕКСПЕРИМЕНТ</span><h1>Молекулярен отговор</h1><p>Работно пространство за проверка на записаните LASSO и Random Forest резултати и за проследяване на реалния експериментален процес.</p></header>
+    <div className="home-choices">
+      <Link to="/overview" className="home-choice"><BarChart3 /><span>01 / РЕЗУЛТАТИ</span><h2>Изследователски резултати</h2><p>Сравнете експерименти, модели, метрики, прогнози и заключената външна валидация.</p><b>Отвори прегледа <ArrowRight /></b></Link>
+      <Link to="/process" className="home-choice accent"><Network /><span>02 / ML ПРОЦЕС</span><h2>ML Process Explorer</h2><p>Проследете nested CV, fold-local LASSO, стабилността, fitted forest структурата и генерализацията.</p><b>Отвори процеса <ArrowRight /></b></Link>
+    </div>
+    <div className="home-data-strip"><span><b>{development?.original_patient_count} → {development?.included_patient_count}</b>GSE25055</span><span><b>{development?.feature_count.toLocaleString('bg-BG')}</b>подравнени probe sets</span><span><b>{external?.original_patient_count} → {external?.included_patient_count}</b>GSE25065</span><span><b>RD / pCR</b>изследователска цел</span></div>
+    <details className="references"><summary>Референции за контекста в България</summary><ol>{bulgariaCancerFacts.map(fact => <li key={fact.label}><b>{fact.value}</b> — {fact.label} ({fact.year}). <a href={fact.sourceUrl} target="_blank" rel="noreferrer">{fact.sourceName}</a></li>)}</ol></details>
   </div>
 }

@@ -2,7 +2,9 @@ import csv
 import io
 import json
 import math
+from datetime import date
 
+import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased, selectinload
 from sklearn.metrics import precision_recall_curve, roc_curve
 
-from app.config import FRONTEND_ORIGINS
+from app.config import FRONTEND_ORIGINS, PROJECT_DIR
 from app.database import get_session
 from app.models import (
     Dataset,
@@ -33,14 +35,19 @@ from app.schemas import (
     FeaturePageResponse,
     FeatureHeatmapResponse,
     FeatureStabilityResponse,
+    FrequencyBucketResponse,
     FinalValidationResponse,
     FoldSimilarityResponse,
+    ForestManifestResponse,
     HealthResponse,
     ModelResponse,
     PredictionPageResponse,
     PreprocessingStepResponse,
     ReportResponse,
 )
+
+
+TREE_ASSET_DIR = PROJECT_DIR / "backend/generated/tree_previews"
 
 
 
@@ -108,6 +115,45 @@ def require_experiment(session, slug):
         )
 
     return experiment
+
+
+def read_tree_manifest():
+    path = TREE_ASSET_DIR / "manifest.json"
+    if not path.is_file():
+        raise HTTPException(503, "Generated locked-forest visualization metadata is unavailable.")
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise HTTPException(503, "Generated locked-forest visualization metadata is invalid.") from error
+    if manifest.get("tree_count") != 30 or manifest.get("custom_tree_count") != 30 or len(manifest.get("selected_probes", [])) != 15:
+        raise HTTPException(503, "Generated locked-forest visualization metadata fails its contract.")
+    return manifest
+
+
+@app.get("/api/forest/manifest", response_model=ForestManifestResponse)
+def forest_manifest():
+    return read_tree_manifest()
+
+
+@app.get("/api/forest/trees/{tree_index}", response_class=Response)
+def forest_tree(tree_index: int):
+    if tree_index < 1 or tree_index > 30:
+        raise HTTPException(404, "Tree index must be between 1 and 30.")
+    manifest = read_tree_manifest()
+    record = next(
+        (item for item in manifest["trees"] if item["tree_index"] == tree_index),
+        None,
+    )
+    if record is None or record["asset"] != f"tree-{tree_index:02d}.svg":
+        raise HTTPException(503, "Requested tree preview is not present in the verified manifest.")
+    path = TREE_ASSET_DIR / record["asset"]
+    if not path.is_file() or path.parent != TREE_ASSET_DIR:
+        raise HTTPException(503, "Requested tree preview is unavailable.")
+    return Response(
+        content=path.read_text(encoding="utf-8"),
+        media_type="image/svg+xml",
+        headers={"Content-Disposition": f'inline; filename="locked-sklearn-tree-{tree_index:02d}.svg"'},
+    )
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -802,19 +848,32 @@ def feature_stability(
 )
 def feature_heatmap(
     limit: int = Query(default=24, ge=5, le=40),
+    minimum_frequency: int = Query(default=1, ge=1, le=10),
+    search: str | None = Query(default=None, max_length=100),
     session: Session = Depends(get_session),
 ):
     experiment = require_experiment(session, "lasso-logistic-nested-cv")
-    top = session.execute(
+    top_query = (
         select(
             SelectedFeature.probe_id,
             ProbeAnnotation.gene_symbol,
             SelectedFeature.selection_frequency,
         )
         .join(ProbeAnnotation)
-        .where(SelectedFeature.experiment_id == experiment.id)
+        .where(
+            SelectedFeature.experiment_id == experiment.id,
+            SelectedFeature.selected_folds >= minimum_frequency,
+        )
         .distinct()
-        .order_by(
+    )
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        top_query = top_query.where(
+            SelectedFeature.probe_id.ilike(pattern)
+            | ProbeAnnotation.gene_symbol.ilike(pattern)
+        )
+    top = session.execute(
+        top_query.order_by(
             SelectedFeature.selection_frequency.desc(),
             SelectedFeature.probe_id
         ).limit(limit)
@@ -835,6 +894,29 @@ def feature_heatmap(
             "source_path": "results/lasso_selected_probes_by_fold.csv",
         })
     return records
+
+
+@app.get(
+    "/api/feature-frequency-distribution",
+    response_model=list[FrequencyBucketResponse],
+)
+def feature_frequency_distribution(session: Session = Depends(get_session)):
+    experiment = require_experiment(session, "lasso-logistic-nested-cv")
+    rows = session.execute(
+        select(SelectedFeature.probe_id, SelectedFeature.selected_folds)
+        .where(
+            SelectedFeature.experiment_id == experiment.id,
+            SelectedFeature.selected_folds.is_not(None),
+        )
+        .distinct()
+    ).all()
+    counts = {folds: 0 for folds in range(1, 11)}
+    for row in rows:
+        counts[row.selected_folds] += 1
+    return [
+        {"selected_folds": folds, "probe_count": counts[folds]}
+        for folds in range(1, 11)
+    ]
 
 
 REPORTS = [
@@ -1012,3 +1094,109 @@ def export_report(report_key: str, session: Session = Depends(get_session)):
             "Content-Disposition": f'attachment; filename="{report_key}.csv"'
         },
     )
+
+
+@app.get("/api/table-exports/{view}", response_class=Response)
+def export_filtered_table(
+    view: str,
+    format: str = Query(default="csv", pattern="^(csv|xlsx)$"),
+    experiment: str | None = None,
+    model: str | None = None,
+    fold: int | None = Query(default=None, ge=1, le=10),
+    actual_class: int | None = Query(default=None, ge=0, le=1),
+    search: str | None = Query(default=None, max_length=100),
+    session: Session = Depends(get_session),
+):
+    if view not in {"fold-results", "features", "predictions"}:
+        raise HTTPException(404, "Unknown table export.")
+    filters = {
+        key: value for key, value in {
+            "experiment": experiment, "model": model, "fold": fold,
+            "actual_class": actual_class, "search": search,
+        }.items() if value not in (None, "")
+    }
+
+    if view == "fold-results":
+        query = (
+            select(FoldMetric, ModelRun, Experiment)
+            .select_from(FoldMetric)
+            .join(ModelRun, FoldMetric.model_run_id == ModelRun.id)
+            .join(Experiment, ModelRun.experiment_id == Experiment.id)
+        )
+        if experiment:
+            query = query.where(Experiment.slug == experiment)
+        if model:
+            query = query.where(ModelRun.model_key == model)
+        if fold:
+            query = query.where(FoldMetric.fold == fold)
+        records = [{
+            "experiment": exp.slug, "model": run.model_key, "fold": item.fold,
+            "training_patients": item.training_patient_count,
+            "validation_patients": item.validation_patient_count,
+            "selected_probes": item.selected_probe_count,
+            **item.metrics,
+            "parameters": json.dumps(item.selected_parameters, ensure_ascii=False),
+        } for item, run, exp in session.execute(query.order_by(Experiment.id, ModelRun.id, FoldMetric.fold))]
+    elif view == "features":
+        query = (
+            select(SelectedFeature, ProbeAnnotation, Experiment)
+            .select_from(SelectedFeature)
+            .join(ProbeAnnotation, SelectedFeature.probe_id == ProbeAnnotation.probe_id)
+            .join(Experiment, SelectedFeature.experiment_id == Experiment.id)
+        )
+        if experiment:
+            query = query.where(Experiment.slug == experiment)
+        if fold:
+            query = query.where(SelectedFeature.fold == fold)
+        if search and search.strip():
+            pattern = f"%{search.strip()}%"
+            query = query.where(SelectedFeature.probe_id.ilike(pattern) | ProbeAnnotation.gene_symbol.ilike(pattern))
+        records = [{
+            "experiment": exp.slug, "probe_id": item.probe_id,
+            "gene_symbol": annotation.gene_symbol, "gene_name": annotation.gene_name,
+            "context": item.selection_context, "fold": item.fold,
+            "coefficient": item.coefficient, "mean_coefficient": item.mean_coefficient,
+            "selected_folds": item.selected_folds, "selection_frequency": item.selection_frequency,
+        } for item, annotation, exp in session.execute(query.order_by(Experiment.id, SelectedFeature.id))]
+    else:
+        query = (
+            select(PredictionRecord, ModelRun, Experiment)
+            .select_from(PredictionRecord)
+            .join(ModelRun, PredictionRecord.model_run_id == ModelRun.id)
+            .join(Experiment, ModelRun.experiment_id == Experiment.id)
+        )
+        if experiment:
+            query = query.where(Experiment.slug == experiment)
+        if model:
+            query = query.where(ModelRun.model_key == model)
+        if fold:
+            query = query.where(PredictionRecord.validation_fold == fold)
+        if actual_class is not None:
+            query = query.where(PredictionRecord.actual_class == actual_class)
+        if search and search.strip():
+            query = query.where(PredictionRecord.patient_id.ilike(f"%{search.strip()}%"))
+        records = [{
+            "experiment": exp.slug, "model": run.model_key,
+            "patient_id": item.patient_id, "actual_class": item.actual_class,
+            "predicted_class": item.predicted_class, "probability": item.probability,
+            "validation_fold": item.validation_fold,
+        } for item, run, exp in session.execute(query.order_by(PredictionRecord.patient_id, ModelRun.model_key))]
+
+    frame = pd.DataFrame(records)
+    identity = "_".join(str(filters.get(key, "all")) for key in ("experiment", "model"))
+    filename = f"{identity}_{view}_{date.today().isoformat()}.{format}"
+    filter_header = json.dumps(filters, ensure_ascii=False, sort_keys=True)
+    if format == "xlsx":
+        binary = io.BytesIO()
+        with pd.ExcelWriter(binary, engine="openpyxl") as writer:
+            frame.to_excel(writer, index=False, sheet_name="data")
+            pd.DataFrame([{"filters": filter_header}]).to_excel(writer, index=False, sheet_name="metadata")
+        content = binary.getvalue()
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        content = frame.to_csv(index=False)
+        media_type = "text/csv; charset=utf-8"
+    return Response(content=content, media_type=media_type, headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Export-Filters": filter_header.encode("ascii", "backslashreplace").decode("ascii"),
+    })

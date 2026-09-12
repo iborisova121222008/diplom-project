@@ -206,6 +206,11 @@ export interface FeatureHeatmap {
   source_path: string
 }
 
+export interface FrequencyBucket {
+  selected_folds: number
+  probe_count: number
+}
+
 export interface FoldSimilarity {
   experiment_slug: string
   fold_a: number
@@ -223,4 +228,44 @@ export interface Report {
   format: string
   download_url: string
   source_paths: string[]
+}
+
+export interface TreeFeatureUsage {
+  probe_id: string
+  split_count: number
+  minimum_split_depth: number | null
+  mean_split_depth: number | null
+}
+
+export interface TreeSummary {
+  tree_index: number
+  full_depth: number
+  node_count: number
+  generated_depth: number
+  used_probes: string[]
+  feature_usage: TreeFeatureUsage[]
+  asset: string
+}
+
+export interface ForestFeatureUsage {
+  probe_id: string
+  trees_using: number
+  split_count: number
+  minimum_split_depth: number | null
+  mean_split_depth: number | null
+  tree_indices: number[]
+}
+
+export interface ForestManifest {
+  derivation: string
+  generated_at_utc: string
+  model_package: string
+  model_package_identity: string
+  model_created_at_utc: string | null
+  tree_count: number
+  custom_tree_count: number
+  selected_probes: string[]
+  generated_depth: number
+  trees: TreeSummary[]
+  feature_usage: ForestFeatureUsage[]
 }

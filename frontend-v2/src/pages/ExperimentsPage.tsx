@@ -1,64 +1,40 @@
 import { useMemo, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { ChevronRight, LockKeyhole } from 'lucide-react'
 import { api } from '../api'
-import { CurveChart, MetricComparisonChart } from '../components/Charts'
-import { EmptyState, ErrorState, LoadingState, PageHeader, SourceNote, formatNumber, metricLabels } from '../components/Shared'
-import type { Experiment } from '../types'
+import { EmptyState, ErrorState, LoadingState, formatNumber, metricLabels } from '../components/Shared'
+import { useExploration } from '../context/ExplorationContext'
 
-function ExperimentDetails({ experiment }: { experiment: Experiment }) {
-  const cv = useQuery({ queryKey: ['cv-results'], queryFn: () => api.cvResults() })
-  const curves = useQuery({
-    queryKey: ['curves', experiment.slug],
-    queryFn: () => api.curves(experiment.slug),
-    enabled: experiment.evaluation_stage === 'cross_validation',
-  })
-  const records = cv.data?.filter(item => item.experiment_slug === experiment.slug) ?? []
-  return <section className="panel details-panel">
-    <div className="section-heading"><div><p className="section-kicker">Детайли на експеримента</p><h2>{experiment.name}</h2></div>{experiment.locked && <span className="badge locked"><LockKeyhole size={14} /> Заключен</span>}</div>
-    <div className="detail-grid"><dl><dt>Набор</dt><dd>{experiment.dataset}</dd><dt>Етап</dt><dd>{experiment.evaluation_stage}</dd><dt>Обхват</dt><dd>{experiment.result_scope}</dd><dt>Време</dt><dd>{experiment.created_at ? new Date(experiment.created_at).toLocaleString('bg-BG') : 'Няма записана информация'}</dd></dl>
-      <div><h3>Модели и настройки</h3>{experiment.models.map(model => <details key={model.model_key}><summary>{model.display_name}</summary><div className="configuration-list">{Object.entries(model.configuration).map(([key, value]) => <p key={key}><span>{key.replaceAll('_', ' ')}</span><strong>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</strong></p>)}</div></details>)}</div></div>
-    {records.map(record => <div key={record.model_key} className="cv-model-section"><h3>Кръстосана валидация по fold — {record.model}</h3><div className="table-scroll"><table><thead><tr><th>Fold</th><th>Обучаващи</th><th>Валидационни</th><th>Избрани probe sets</th><th>ROC-AUC</th><th>PR-AUC</th><th>F1</th><th>Избрани параметри</th></tr></thead><tbody>{record.folds.map(fold => <tr key={fold.fold}><td>{fold.fold}</td><td>{fold.training_patient_count ?? '—'}</td><td>{fold.validation_patient_count ?? '—'}</td><td>{fold.selected_probe_count ?? '—'}</td><td>{formatNumber(fold.metrics.roc_auc)}</td><td>{formatNumber(fold.metrics.pr_auc)}</td><td>{formatNumber(fold.metrics.f1)}</td><td>{Object.keys(fold.selected_parameters).length ? JSON.stringify(fold.selected_parameters) : 'Няма записана информация'}</td></tr>)}</tbody></table></div>
-      <h3>Средни стойности и стандартно отклонение</h3><div className="summary-grid">{Object.entries(record.summary.metrics).map(([key, values]) => <div key={key}><small>{metricLabels[key] ?? key}</small><strong>{formatNumber(values.mean)}</strong><span>± {formatNumber(values.std)}</span></div>)}</div><SourceNote paths={[record.folds[0]?.source_path, record.summary.source_path]} /></div>)}
-    {curves.isLoading && <LoadingState label="Подготовка на OOF кривите…" />}
-    {curves.data && <div className="two-charts"><CurveChart models={curves.data.models} kind="roc" /><CurveChart models={curves.data.models} kind="precision_recall" /></div>}
-    <details className="technical"><summary>Технически детайли</summary><pre>{JSON.stringify(experiment, null, 2)}</pre></details>
-    <SourceNote paths={[experiment.source_path, ...experiment.models.map(model => model.configuration_source_path)]} />
-  </section>
-}
+const tabs = ['Настройки', 'Fold резултати', 'Характеристики', 'Предикции', 'Метаданни'] as const
 
 export function ExperimentsPage() {
+  const { state, update } = useExploration()
   const [dataset, setDataset] = useState('')
   const [stage, setStage] = useState('')
-  const [model, setModel] = useState('')
-  const [status, setStatus] = useState('')
-  const [selected, setSelected] = useState('')
-  const [experiments, comparison] = useQueries({ queries: [
+  const [tab, setTab] = useState<(typeof tabs)[number]>('Настройки')
+  const [experiments, cv] = useQueries({ queries: [
     { queryKey: ['experiments'], queryFn: () => api.experiments() },
-    { queryKey: ['comparison'], queryFn: api.comparison },
+    { queryKey: ['cv-results'], queryFn: () => api.cvResults() },
   ] })
-  const visible = useMemo(() => (experiments.data ?? []).filter(item =>
-    (!dataset || item.dataset === dataset)
-    && (!stage || item.evaluation_stage === stage)
-    && (!model || item.models.some(run => run.model_key === model))
-    && (!status || item.status === status)
-  ), [dataset, stage, model, status, experiments.data])
+  const visible = useMemo(() => (experiments.data ?? []).filter(item => (!dataset || item.dataset === dataset) && (!stage || item.evaluation_stage === stage)), [experiments.data, dataset, stage])
+  const selected = visible.find(item => item.slug === state.experiment) ?? visible[0]
+  const selectedRun = selected?.models.find(item => item.model_key === state.model) ?? selected?.models[0]
+  const features = useQuery({ queryKey: ['experiment-features', selected?.slug], queryFn: () => api.features({ experiment: selected!.slug, limit: 20 }), enabled: Boolean(selected && tab === 'Характеристики') })
+  const predictions = useQuery({ queryKey: ['experiment-predictions', selected?.slug, selectedRun?.model_key], queryFn: () => api.predictions({ experiment: selected!.slug, model: selectedRun?.model_key, limit: 20 }), enabled: Boolean(selected && selectedRun && tab === 'Предикции') })
+  if (experiments.isLoading || cv.isLoading) return <LoadingState />
+  if (experiments.isError || cv.isError) return <ErrorState error={(experiments.error || cv.error) as Error} retry={() => { experiments.refetch(); cv.refetch() }} />
+  const foldRecord = cv.data?.find(item => item.experiment_slug === selected?.slug && item.model_key === selectedRun?.model_key)
 
-  if (experiments.isLoading || comparison.isLoading) return <LoadingState />
-  if (experiments.isError || comparison.isError) return <ErrorState error={(experiments.error || comparison.error) as Error} retry={() => { experiments.refetch(); comparison.refetch() }} />
-  const selectedExperiment = experiments.data?.find(item => item.slug === selected)
-
-  return <div className="page">
-    <PageHeader eyebrow="Завършени изпълнения" title="Експерименти" description="Филтриране, проследяване и сравнение на вече записаните експерименти. Оттук не може да се стартира обучение." />
-    <section className="panel"><div className="filters">
-      <label>Набор<select value={dataset} onChange={event => setDataset(event.target.value)}><option value="">Всички</option><option>GSE25055</option><option>GSE25065</option></select></label>
-      <label>Тип<select value={stage} onChange={event => setStage(event.target.value)}><option value="">Всички</option><option value="cross_validation">Кръстосана валидация</option><option value="final_training">Финално обучение</option><option value="external_validation">Външна валидация</option></select></label>
-      <label>Модел<select value={model} onChange={event => setModel(event.target.value)}><option value="">Всички</option><option value="l2_logistic">L2 Logistic</option><option value="lasso_logistic">LASSO</option><option value="custom_random_forest">Custom Random Forest</option><option value="sklearn_random_forest">Sklearn Random Forest</option></select></label>
-      <label>Статус<select value={status} onChange={event => setStatus(event.target.value)}><option value="">Всички</option><option value="completed">Завършен</option><option value="locked">Заключен</option></select></label>
+  return <div className="workspace-page dense-results"><header className="compact-page-header"><div><span className="section-code">RESEARCH RESULTS</span><h1>Експерименти</h1><p>Филтриране на завършените изпълнения и проверка на настройките, fold резултатите и свързаните записи.</p></div></header>
+    <div className="filters compact"><label>Набор<select value={dataset} onChange={event => setDataset(event.target.value)}><option value="">Всички</option><option>GSE25055</option><option>GSE25065</option></select></label><label>Етап<select value={stage} onChange={event => setStage(event.target.value)}><option value="">Всички</option><option value="cross_validation">Кръстосана валидация</option><option value="final_training">Финален fit</option><option value="external_validation">Външна валидация</option></select></label><span className="filter-summary">{visible.length} експеримента</span></div>
+    <div className="master-detail"><section className="master-table"><table><thead><tr><th>Експеримент</th><th>Набор</th><th>Модели</th><th>Статус</th></tr></thead><tbody>{visible.map(item => <tr key={item.slug} className={item.slug === selected?.slug ? 'selected-row' : ''} onClick={() => update({ experiment: item.slug, dataset: item.dataset })}><th>{item.name}</th><td><code>{item.dataset}</code></td><td>{item.models.length}</td><td>{item.locked ? 'Заключен' : 'Завършен'}</td></tr>)}</tbody></table></section>
+      <aside className="run-detail">{selected && selectedRun ? <><span className="detail-index">ИЗБРАН МОДЕЛ</span><h2>{selectedRun.display_name}</h2><label className="control-field"><span>Модел</span><select value={selectedRun.model_key} onChange={event => update({ model: event.target.value })}>{selected.models.map(item => <option key={item.model_key} value={item.model_key}>{item.display_name}</option>)}</select></label><div className="run-metrics">{Object.entries(selectedRun.overall_metrics).slice(0,4).map(([key,value]) => <span key={key}><small>{metricLabels[key] ?? key}</small><b>{formatNumber(value)}</b></span>)}</div></> : <EmptyState />}</aside>
     </div>
-    {!visible.length ? <EmptyState text="Няма експерименти, които отговарят на филтрите." /> : <div className="table-scroll"><table><thead><tr><th>Експеримент</th><th>Набор</th><th>Етап</th><th>Модели</th><th>Статус</th><th><span className="sr-only">Детайли</span></th></tr></thead><tbody>{visible.map(item => <tr key={item.slug} className={selected === item.slug ? 'selected-row' : ''}><th>{item.name}</th><td>{item.dataset}</td><td>{item.evaluation_stage}</td><td>{item.models.map(run => run.display_name).join(', ') || '—'}</td><td><span className={`badge ${item.locked ? 'locked' : ''}`}>{item.locked ? 'Заключен' : 'Завършен'}</span></td><td><button className="table-action" onClick={() => setSelected(item.slug)} aria-label={`Отвори ${item.name}`}><ChevronRight size={17} /></button></td></tr>)}</tbody></table></div>}
-    <SourceNote paths={visible.map(item => item.source_path)} /></section>
-    {selectedExperiment && <ExperimentDetails experiment={selectedExperiment} />}
-    <section className="panel"><p className="section-kicker">Общо OOF сравнение</p><h2>Представяне върху GSE25055</h2><p className="muted">Общите out-of-fold (OOF) метрики използват прогноза от fold, в който съответната пациентка не е участвала в обучението.</p>{comparison.data?.length ? <><MetricComparisonChart rows={comparison.data} /><SourceNote paths={comparison.data.map(item => item.source_path)} /></> : <EmptyState />}</section>
+    {selected && selectedRun && <section className="detail-tabs"><div className="tab-bar">{tabs.map(item => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>)}</div><div className="tab-content">
+      {tab === 'Настройки' && <div className="configuration-grid">{Object.entries(selectedRun.configuration).map(([key,value]) => <span key={key}><small>{key.replaceAll('_',' ')}</small><code>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</code></span>)}</div>}
+      {tab === 'Fold резултати' && (foldRecord ? <><div className="table-toolbar"><b>{foldRecord.model}</b><div><a className="button secondary" href={api.tableExportUrl('fold-results', { experiment: selected.slug, model: selectedRun.model_key, format: 'csv' })}>CSV</a> <a className="button secondary" href={api.tableExportUrl('fold-results', { experiment: selected.slug, model: selectedRun.model_key, format: 'xlsx' })}>XLSX</a></div></div><table><thead><tr><th>Fold</th><th>Train</th><th>Validation</th><th>Probe sets</th><th>ROC-AUC</th><th>PR-AUC</th><th>F1</th></tr></thead><tbody>{foldRecord.folds.map(item => <tr key={item.fold}><th>{item.fold}</th><td>{item.training_patient_count}</td><td>{item.validation_patient_count}</td><td>{item.selected_probe_count}</td><td>{formatNumber(item.metrics.roc_auc)}</td><td>{formatNumber(item.metrics.pr_auc)}</td><td>{formatNumber(item.metrics.f1)}</td></tr>)}</tbody></table></> : <EmptyState />)}
+      {tab === 'Характеристики' && (features.isLoading ? <LoadingState /> : features.data?.items.length ? <><div className="table-toolbar"><b>{features.data.total} записа</b><a className="button secondary" href={api.tableExportUrl('features', { experiment: selected.slug, format: 'csv' })}>CSV</a></div><table><thead><tr><th>Probe ID</th><th>Ген</th><th>Fold</th><th>Коефициент</th></tr></thead><tbody>{features.data.items.map(item => <tr key={`${item.probe_id}-${item.fold}`}><th><code>{item.probe_id}</code></th><td>{item.annotation.gene_symbol || '—'}</td><td>{item.fold ?? '—'}</td><td>{formatNumber(item.coefficient,5)}</td></tr>)}</tbody></table></> : <EmptyState />)}
+      {tab === 'Предикции' && (predictions.isLoading ? <LoadingState /> : predictions.data?.items.length ? <><div className="table-toolbar"><b>{predictions.data.total} записа</b><a className="button secondary" href={api.tableExportUrl('predictions', { experiment: selected.slug, model: selectedRun.model_key, format: 'csv' })}>CSV</a></div><table><thead><tr><th>Проба</th><th>Реален</th><th>Прогноза</th><th>Вероятност</th><th>Fold</th></tr></thead><tbody>{predictions.data.items.map(item => <tr key={item.patient_id}><th><code>{item.patient_id}</code></th><td>{item.actual_class}</td><td>{item.predicted_class}</td><td>{formatNumber(item.probability)}</td><td>{item.validation_fold ?? '—'}</td></tr>)}</tbody></table></> : <EmptyState />)}
+      {tab === 'Метаданни' && <dl className="metadata-list"><dt>Експеримент</dt><dd><code>{selected.slug}</code></dd><dt>Етап</dt><dd>{selected.evaluation_stage}</dd><dt>Обхват</dt><dd>{selected.result_scope}</dd><dt>Създаден</dt><dd>{selected.created_at ? new Date(selected.created_at).toLocaleString('bg-BG') : 'Няма запис'}</dd><dt>Артефакт</dt><dd><code>{selected.source_path}</code></dd></dl>}
+    </div></section>}
   </div>
 }
