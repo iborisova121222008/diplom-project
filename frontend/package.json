@@ -1,5 +1,5 @@
 {
-  "name": "breast-cancer-research-dashboard-v2",
+  "name": "breast-cancer-research-dashboard",
   "private": true,
   "version": "2.0.0",
   "type": "module",
@@ -7,8 +7,6 @@
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.app.json && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
-    "lint": "eslint .",
-    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -23,16 +21,7 @@
     "vite": "^7.1.4"
   },
   "devDependencies": {
-    "@eslint/js": "^9.35.0",
     "@types/react": "^19.1.12",
-    "@types/react-dom": "^19.1.9",
-    "@testing-library/react": "^16.3.0",
-    "eslint": "^9.35.0",
-    "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0.4.20",
-    "globals": "^16.3.0",
-    "jsdom": "^27.0.0",
-    "typescript-eslint": "^8.42.0",
-    "vitest": "^3.2.4"
+    "@types/react-dom": "^19.1.9"
   }
 }

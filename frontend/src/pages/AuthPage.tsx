@@ -1,6 +1,10 @@
 import { FormEvent, useState } from 'react'
 import { useAuth } from '../AuthContext'
 
+const PASSWORD_MESSAGE = 'Паролата трябва да съдържа поне 8 символа, малка и главна буква, цифра и специален символ.'
+const RESEARCHER_ID_MESSAGE = 'Researcher ID трябва да е 3–50 знака, да започва с буква или цифра и да съдържа само букви, цифри, ., _ и -.'
+const SPECIAL_CHARACTERS = new Set(`!@#$%^&*()_+-=[]{};':"\\|,.<>/?`)
+
 export function AuthPage() {
   const { login, register } = useAuth()
   const [registration, setRegistration] = useState(false)
@@ -11,13 +15,20 @@ export function AuthPage() {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    const cleanResearcherId = researcherId.trim()
-    if (!/^[A-Za-z0-9_.-]{3,50}$/.test(cleanResearcherId)) {
-      setMessage('Името трябва да е 3–50 знака: букви, цифри, точка, тире или долна черта.')
+    const cleanResearcherId = researcherId.trim().toLowerCase()
+    if (!/^[\p{L}\p{N}][\p{L}\p{N}._-]{2,49}$/u.test(cleanResearcherId)) {
+      setMessage(RESEARCHER_ID_MESSAGE)
       return
     }
-    if (password.length < 8 || password.length > 128) {
-      setMessage('Паролата трябва да е между 8 и 128 знака.')
+    const validPassword = password.length >= 8
+      && password.length <= 128
+      && password === password.trim()
+      && /\p{Ll}/u.test(password)
+      && /\p{Lu}/u.test(password)
+      && /\p{N}/u.test(password)
+      && [...password].some(character => SPECIAL_CHARACTERS.has(character))
+    if (registration && !validPassword) {
+      setMessage(PASSWORD_MESSAGE)
       return
     }
     setMessage('')
@@ -42,6 +53,7 @@ export function AuthPage() {
       <label>Парола
         <input type="password" autoComplete={registration ? 'new-password' : 'current-password'} value={password} onChange={event => setPassword(event.target.value)} />
       </label>
+      {registration && <small className="password-rule">{PASSWORD_MESSAGE}</small>}
       {message && <p className="auth-message" role="alert">{message}</p>}
       <button className="auth-submit" type="submit" disabled={submitting}>
         {submitting ? 'Моля, изчакайте…' : registration ? 'Регистрация' : 'Вход'}

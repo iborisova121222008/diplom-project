@@ -1,5 +1,3 @@
-/* eslint-disable react-refresh/only-export-components */
-
 export function LoadingState({ label = 'Зареждане на резултатите…' }: { label?: string }) {
   return <p className="inline-state" role="status">{label}</p>
 }

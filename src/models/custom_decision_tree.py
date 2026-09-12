@@ -1,7 +1,6 @@
 import numpy as np
 
 
-
 class TreeNode:
     """Един възел от дървото."""
 

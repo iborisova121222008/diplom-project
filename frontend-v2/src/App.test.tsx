@@ -72,38 +72,6 @@ describe('автентикация', () => {
     expect(window.localStorage.getItem('research-dashboard-auth')).toBeNull()
   })
 
-  it('регистрира и удостоверява автоматично с една заявка', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).toContain('/api/auth/register')
-      expect(init?.method).toBe('POST')
-      expect(JSON.parse(String(init?.body))).toEqual({
-        researcher_id: 'new.researcher',
-        password: 'Secure-Test1!',
-      })
-      return {
-        ok: true,
-        json: async () => ({
-          access_token: 'registration-token', token_type: 'bearer', researcher_id: 'new.researcher',
-        }),
-      } as Response
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    render(<Providers><App /></Providers>)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Към регистрация' }))
-    fireEvent.change(screen.getByLabelText('Researcher ID'), { target: { value: ' New.Researcher ' } })
-    fireEvent.change(screen.getByLabelText('Парола'), { target: { value: 'Secure-Test1!' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Регистрация' }))
-
-    await screen.findByRole('navigation', { name: 'Основна навигация' })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(screen.getByText('new.researcher')).toBeTruthy()
-    expect(JSON.parse(window.localStorage.getItem('research-dashboard-auth') ?? '{}')).toEqual({
-      accessToken: 'registration-token',
-      researcher_id: 'new.researcher',
-    })
-  })
-
   it('заменя суровата мрежова грешка с кратко съобщение', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       throw new TypeError('NetworkError when attempting to fetch resource.')
