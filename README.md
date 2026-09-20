@@ -26,9 +26,8 @@ arrays and fitted model objects remain in the existing artifacts.
 ## Project structure
 
 ```text
-backend/     FastAPI API, SQLAlchemy schema, importer and system tests
-frontend/    Preserved original React/TypeScript dashboard
-frontend-v2/ Read-only post-experiment React/TypeScript dashboard
+backend/     FastAPI API, SQLAlchemy schema and canonical importer
+frontend/    Approved React/TypeScript research dashboard
 docs/        Experiment-lineage documentation
 data/        Trusted dataset checkpoints (read-only)
 notebooks/   Offline experimental workflow (read-only)
@@ -108,22 +107,16 @@ password.
 The complete connection URL is required through the process environment or
 the ignored `backend/.env` file. There is no normal-runtime SQLite fallback.
 
-Copy the placeholder file and edit only the ignored copy:
+Create the ignored `backend/.env` file locally. It must define only these
+application settings:
 
-```powershell
-Copy-Item backend\.env.example backend\.env
-notepad backend\.env
-```
+- `DATABASE_URL`
+- `FRONTEND_ORIGIN`
+- `JWT_SECRET`
+- `JWT_ACCESS_TOKEN_MINUTES`
 
-Expected form inside `backend/.env`:
-
-```text
-DATABASE_URL=postgresql+psycopg://diplom_app:<password>@localhost:5432/diplom_project
-FRONTEND_ORIGIN=http://localhost:5173
-```
-
-Never commit `backend/.env`. The root `.env`, `backend/.env`, and
-`frontend/.env` are ignored.
+Set their real values only in the local file or process environment. Never
+commit `backend/.env`; it is ignored by Git.
 
 ## Manual setup and startup
 
@@ -140,11 +133,10 @@ python -m pip install -r backend\requirements.txt
 ### 2. Configure the local connection
 
 ```powershell
-Copy-Item backend\.env.example backend\.env
 notepad backend\.env
 ```
 
-Enter the real password only in the ignored file.
+Create the file if needed and enter all required local values there.
 
 ### 3. Verify PostgreSQL manually
 
@@ -164,19 +156,9 @@ $env:PYTHONPATH = "backend"
 python -m alembic -c alembic.ini upgrade head
 ```
 
-For the approved existing database, verify its six-table baseline before
-stamping it, then apply the additive migration:
-
-```powershell
-$env:PYTHONPATH = "backend"
-python backend\scripts\verify_schema_baseline.py
-python -m alembic -c alembic.ini stamp 0001_existing_schema
-python -m alembic -c alembic.ini upgrade head
-```
-
-Do not stamp an empty or unverified database. The migrations preserve the six
-scientific tables and add only `prediction_records` and
-`fold_feature_similarity`; Alembic also owns its technical
+The migrations create the six scientific tables and add `prediction_records` and
+`fold_feature_similarity`. The authentication migration adds only the
+independent `users` table; Alembic also owns its technical
 `alembic_version` table.
 
 ### 5. Import canonical artifacts
@@ -192,13 +174,6 @@ experiment rows. It then replaces only its five known experiment records in
 one transaction. Failure rolls the transaction back. Repeated successful
 runs do not create duplicate rows.
 
-On an already imported, verified database, populate only the approved Phase 2
-records without replacing the existing experiment rows:
-
-```powershell
-python backend\scripts\backfill_phase2_results.py
-```
-
 ### 6. Start FastAPI
 
 ```powershell
@@ -208,11 +183,16 @@ uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
 ### 7. Install and start the new dashboard in another PowerShell terminal
 
 ```powershell
-Set-Location D:\diplom-project\frontend-v2
+Set-Location D:\diplom-project\frontend
 npm install
-Copy-Item .env.example .env
 npm run dev
 ```
+
+Open `http://localhost:5173`, choose `Към регистрация`, and register the
+first researcher with a Researcher ID. Passwords are 8–128 characters and must
+contain a lowercase letter, uppercase letter, digit, and one character from
+`!@#$%^&*()_+-=[]{};':"\|,.<>/?`. Registration signs the researcher in
+immediately.
 
 ## Local URLs
 
@@ -220,11 +200,15 @@ npm run dev
 - Swagger/OpenAPI: `http://localhost:8000/docs`
 - React dashboard: `http://localhost:5173`
 
-## Read-only API
+## Authenticated API
 
 ```text
+POST /api/auth/register
+POST /api/auth/login
 GET /api/health
 GET /api/datasets
+GET /api/expression-preview
+GET /api/expression-preview/export
 GET /api/preprocessing
 GET /api/features
 GET /api/models
@@ -238,6 +222,11 @@ GET /api/model-disagreements
 GET /api/fold-feature-similarity
 GET /api/feature-stability
 GET /api/feature-heatmap
+GET /api/feature-frequency-distribution
+GET /api/forest/manifest
+GET /api/forest/structure
+GET /api/forest/trees/{tree_index}
+GET /api/table-exports/{view}
 GET /api/reports
 GET /api/exports/{report_key}
 ```
@@ -246,25 +235,27 @@ The API does not accept expression matrices, artifact paths or patient data.
 It has no prediction route. It does not read scientific artifacts as a
 runtime fallback when PostgreSQL is unavailable.
 
-## Automated checks
+## Retained checks
 
-Backend and existing ML tests use an isolated in-memory database configured
-only by the test suite. They do not connect to native PostgreSQL:
+The repository retains only the original unit tests for the custom Decision
+Tree and Random Forest implementations:
 
 ```powershell
-$env:PYTHONPATH = "backend"
 $env:PYTHONDONTWRITEBYTECODE = "1"
-python -m pytest backend\tests src\models\tests
+python -m pytest src\models\tests\test_custom_decision_tree.py src\models\tests\test_custom_random_forest.py
 ```
 
-Frontend checks:
+Frontend type checking and production build:
 
 ```powershell
-Set-Location frontend-v2
-npm run lint
+Set-Location frontend
 npm run typecheck
 npm run build
 ```
+
+The dashboard has two top-level routes: `/` and `/experiment`. The experiment
+workspace uses six compact URL-backed subtabs for inputs, preparation,
+features, forest inspection, evaluation, and stored patient predictions.
 
 ## Reproducibility and leakage protections
 

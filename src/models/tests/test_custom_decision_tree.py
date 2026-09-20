@@ -110,6 +110,7 @@ def test_weighted_leaf_probability():
 
     assert leaf.prediction == 1
 
+
 def test_tree_node_is_leaf():
     """
     Проверява дали TreeNode правилно разпознава листо.
@@ -463,6 +464,3 @@ def test_predict_multiple_patients():
     assert np.all(
         probabilities <= 1.0
     )
-
-
-    
