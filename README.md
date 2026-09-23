@@ -27,8 +27,7 @@ arrays and fitted model objects remain in the existing artifacts.
 
 ```text
 backend/     FastAPI API, SQLAlchemy schema, importer and system tests
-frontend/    Preserved original React/TypeScript dashboard
-frontend-v2/ Read-only post-experiment React/TypeScript dashboard
+frontend/    React/TypeScript dashboard with researcher authentication
 docs/        Experiment-lineage documentation
 data/        Trusted dataset checkpoints (read-only)
 notebooks/   Offline experimental workflow (read-only)
@@ -120,7 +119,13 @@ Expected form inside `backend/.env`:
 ```text
 DATABASE_URL=postgresql+psycopg://diplom_app:<password>@localhost:5432/diplom_project
 FRONTEND_ORIGIN=http://localhost:5173
+JWT_SECRET=<at least 32 characters>
+JWT_ACCESS_TOKEN_MINUTES=60
 ```
+
+`JWT_SECRET` signs the researcher access tokens and must contain at least 32
+characters; the application refuses to start without it. Generate one with
+`python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
 Never commit `backend/.env`. The root `.env`, `backend/.env`, and
 `frontend/.env` are ignored.
@@ -175,8 +180,8 @@ python -m alembic -c alembic.ini upgrade head
 ```
 
 Do not stamp an empty or unverified database. The migrations preserve the six
-scientific tables and add only `prediction_records` and
-`fold_feature_similarity`; Alembic also owns its technical
+scientific tables and add only `prediction_records`,
+`fold_feature_similarity` and `users`; Alembic also owns its technical
 `alembic_version` table.
 
 ### 5. Import canonical artifacts
@@ -205,14 +210,16 @@ python backend\scripts\backfill_phase2_results.py
 uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
 ```
 
-### 7. Install and start the new dashboard in another PowerShell terminal
+### 7. Install and start the dashboard in another PowerShell terminal
 
 ```powershell
-Set-Location D:\diplom-project\frontend-v2
+Set-Location D:\diplom-project\frontend
 npm install
-Copy-Item .env.example .env
 npm run dev
 ```
+
+The dashboard reads the API through the Vite proxy at `/api`, so no
+`frontend/.env` is required for local work.
 
 ## Local URLs
 
@@ -220,26 +227,44 @@ npm run dev
 - Swagger/OpenAPI: `http://localhost:8000/docs`
 - React dashboard: `http://localhost:5173`
 
-## Read-only API
+## API
+
+Authentication is required. A researcher registers or logs in, receives a JWT
+access token and sends it as `Authorization: Bearer <token>` on every other
+request. Tokens expire after `JWT_ACCESS_TOKEN_MINUTES`.
+
+Public endpoints:
+
+```text
+POST /api/auth/register
+POST /api/auth/login
+```
+
+Read-only endpoints behind the researcher token:
 
 ```text
 GET /api/health
 GET /api/datasets
+GET /api/expression-preview
+GET /api/expression-preview/export
 GET /api/preprocessing
 GET /api/features
+GET /api/feature-stability
+GET /api/feature-heatmap
+GET /api/feature-frequency-distribution
+GET /api/fold-feature-similarity
 GET /api/models
 GET /api/cv-results
 GET /api/comparison
 GET /api/final-validation
 GET /api/experiments
 GET /api/predictions
-GET /api/curves
 GET /api/model-disagreements
-GET /api/fold-feature-similarity
-GET /api/feature-stability
-GET /api/feature-heatmap
+GET /api/curves
+GET /api/forest/structure
 GET /api/reports
 GET /api/exports/{report_key}
+GET /api/table-exports/{view}
 ```
 
 The API does not accept expression matrices, artifact paths or patient data.
@@ -260,8 +285,7 @@ python -m pytest backend\tests src\models\tests
 Frontend checks:
 
 ```powershell
-Set-Location frontend-v2
-npm run lint
+Set-Location frontend
 npm run typecheck
 npm run build
 ```

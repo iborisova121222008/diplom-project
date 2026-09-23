@@ -1,12 +1,4 @@
-from fastapi.testclient import TestClient
-
-from app.main import app
-
-
-client = TestClient(app)
-
-
-def test_dataset_response_uses_imported_counts():
+def test_dataset_response_uses_imported_counts(client):
     response = client.get("/api/datasets")
 
     assert response.status_code == 200
@@ -17,7 +9,7 @@ def test_dataset_response_uses_imported_counts():
     assert datasets["GSE25065"]["role"] == "external_validation_only"
 
 
-def test_cv_response_keeps_result_types_separate():
+def test_cv_response_keeps_result_types_separate(client):
     response = client.get("/api/cv-results")
 
     assert response.status_code == 200
@@ -31,7 +23,7 @@ def test_cv_response_keeps_result_types_separate():
     )
 
 
-def test_comparison_is_explicitly_overall_oof():
+def test_comparison_is_explicitly_overall_oof(client):
     response = client.get("/api/comparison")
 
     assert response.status_code == 200
@@ -42,7 +34,7 @@ def test_comparison_is_explicitly_overall_oof():
     )
 
 
-def test_feature_context_and_annotation_are_visible():
+def test_feature_context_and_annotation_are_visible(client):
     response = client.get(
         "/api/features",
         params={"search": "HMGXB3", "limit": 10}
@@ -56,7 +48,7 @@ def test_feature_context_and_annotation_are_visible():
     assert item["annotation"]["display_only"] is True
 
 
-def test_final_validation_is_locked_and_external_only():
+def test_final_validation_is_locked_and_external_only(client):
     response = client.get("/api/final-validation")
 
     assert response.status_code == 200
@@ -68,12 +60,12 @@ def test_final_validation_is_locked_and_external_only():
     assert len(body["models"]) == 2
 
 
-def test_no_patient_prediction_endpoint_exists():
+def test_no_patient_prediction_endpoint_exists(client):
     assert client.post("/api/predict", json={}).status_code == 404
     assert client.get("/api/predict").status_code == 404
 
 
-def test_experiments_are_completed_or_locked():
+def test_experiments_are_completed_or_locked(client):
     response = client.get("/api/experiments")
 
     assert response.status_code == 200
@@ -83,7 +75,7 @@ def test_experiments_are_completed_or_locked():
     }
 
 
-def test_prediction_records_are_read_only_stored_results():
+def test_prediction_records_are_read_only_stored_results(client):
     response = client.get(
         "/api/predictions",
         params={
@@ -98,7 +90,7 @@ def test_prediction_records_are_read_only_stored_results():
     assert len(response.json()["items"]) == 5
 
 
-def test_curves_use_imported_prediction_records():
+def test_curves_use_imported_prediction_records(client):
     response = client.get(
         "/api/curves",
         params={"experiment": "balanced-rf-nested-cv"},
@@ -109,14 +101,14 @@ def test_curves_use_imported_prediction_records():
     assert len(response.json()["models"]) == 2
 
 
-def test_fold_similarity_contains_all_pairs():
+def test_fold_similarity_contains_all_pairs(client):
     response = client.get("/api/fold-feature-similarity")
 
     assert response.status_code == 200
     assert len(response.json()) == 45
 
 
-def test_external_compatibility_is_exposed_from_dataset_metadata():
+def test_external_compatibility_is_exposed_from_dataset_metadata(client):
     response = client.get("/api/datasets")
     external = next(
         item for item in response.json() if item["accession"] == "GSE25065"

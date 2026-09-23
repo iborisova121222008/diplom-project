@@ -26,6 +26,17 @@ export interface Dataset {
   }
 }
 
+export interface ExpressionPreview {
+  dataset: string
+  total_patients: number
+  total_probes: number
+  row_offset: number
+  column_offset: number
+  patients: string[]
+  probes: string[]
+  values: number[][]
+}
+
 export interface WorkflowStep {
   order: number
   category: string
@@ -83,7 +94,7 @@ export interface Feature {
   }
 }
 
-export interface Page<T> { total: number; offset: number; limit: number; items: T[] }
+export interface Page<T> { total: number; correct?: number; incorrect?: number; disagreements?: number; offset: number; limit: number; items: T[] }
 
 export interface FoldResult {
   fold: number
@@ -139,7 +150,6 @@ export interface FinalValidation {
   models: Array<{
     model_key: string
     model: string
-    threshold: number
     configuration: Record<string, unknown>
     metrics: Metrics
     confusion_matrix: Record<string, number>
@@ -162,8 +172,8 @@ export interface Prediction {
 export interface ModelCurve {
   model_key: string
   model: string
-  roc: Array<{ x: number; y: number; threshold: number | null }>
-  precision_recall: Array<{ x: number; y: number; threshold: number | null }>
+  roc: Array<{ x: number; y: number }>
+  precision_recall: Array<{ x: number; y: number }>
   probability_distribution: Array<{
     lower: number; upper: number; rd_count: number; pcr_count: number
   }>
@@ -206,6 +216,11 @@ export interface FeatureHeatmap {
   source_path: string
 }
 
+export interface FrequencyBucket {
+  selected_folds: number
+  probe_count: number
+}
+
 export interface FoldSimilarity {
   experiment_slug: string
   fold_a: number
@@ -223,4 +238,24 @@ export interface Report {
   format: string
   download_url: string
   source_paths: string[]
+}
+
+export interface ForestStructure {
+  implementation: 'custom' | 'sklearn'
+  tree_index: number
+  visible_depth: number
+  full_depth: number
+  full_node_count: number
+  nodes: Array<{
+    node_id: number
+    parent_id: number | null
+    branch: 'left' | 'right' | null
+    depth: number
+    position: number
+    probe_id: string | null
+    split_value: number | null
+    probability: number
+    prediction: number
+    leaf: boolean
+  }>
 }
