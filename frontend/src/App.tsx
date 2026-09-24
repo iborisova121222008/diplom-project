@@ -5,7 +5,6 @@ import { LoadingState } from './components/Shared'
 import { useAuth } from './AuthContext'
 import { AuthPage } from './pages/AuthPage'
 
-const HomePage = lazy(() => import('./pages/HomePage').then(module => ({ default: module.HomePage })))
 const ExperimentPage = lazy(() => import('./pages/ExperimentPage').then(module => ({ default: module.ExperimentPage })))
 
 export default function App() {
@@ -14,7 +13,7 @@ export default function App() {
 
   return <Suspense fallback={<LoadingState label="Зареждане…" />}><Routes>
     <Route element={<Layout />}>
-      <Route index element={<HomePage />} />
+      <Route index element={<Navigate to="/experiment/input" replace />} />
       <Route path="experiment" element={<ExperimentPage />} />
       <Route path="experiment/:tab" element={<ExperimentPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />

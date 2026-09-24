@@ -5,13 +5,12 @@ import { NavLink, Navigate, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { ChartExportActions } from '../components/ChartExport'
 import { EmptyState, ErrorState, LoadingState, classLabel, formatNumber, metricLabels } from '../components/Shared'
-import type { ForestStructure, MetricName, Metrics, Prediction } from '../types'
+import type { MetricName, Metrics, Prediction } from '../types'
 
 const tabs = [
   ['input', 'Входни данни'],
   ['preparation', 'Подготовка на данните'],
   ['features', 'Избрани характеристики'],
-  ['forest', 'Обучение на собствен модел'],
   ['evaluation', 'Оценка на моделите'],
   ['predictions', 'Прогнози'],
 ] as const
@@ -81,21 +80,20 @@ function PreparationTab() {
     <details className="settings"><summary>Проверени стъпки</summary><table><tbody>{workflow.data?.map(item => <tr key={item.order}><th>{item.title}</th><td>{item.detail}</td></tr>)}</tbody></table></details></>
 }
 
-type FeatureView = 'frequency' | 'heatmap' | 'coefficients'
+type FeatureView = 'heatmap' | 'coefficients'
 function FeaturesTab() {
-  const [view, setView] = useState<FeatureView>('frequency')
+  const [view, setView] = useState<FeatureView>('heatmap')
   const [fold, setFold] = useState('')
   const [minimum, setMinimum] = useState(1)
   const [search, setSearch] = useState('')
   const [finalOnly, setFinalOnly] = useState(false)
   const [selectedProbe, setSelectedProbe] = useState('')
-  const [stability, heatmap, finalFeatures, frequency] = useQueries({ queries: [
+  const [stability, heatmap, finalFeatures] = useQueries({ queries: [
     { queryKey: ['feature-stability', minimum, search, finalOnly], queryFn: () => api.featureStability({ limit: 30, minimum_frequency: minimum, search, final_only: finalOnly ? 1 : 0 }) },
     { queryKey: ['feature-heatmap', minimum, search], queryFn: () => api.featureHeatmap(30, minimum, search) },
     { queryKey: ['final-features'], queryFn: () => api.features({ experiment: 'final-model-gse25055', limit: 100, sort_by: 'probe_id' }) },
-    { queryKey: ['feature-frequency'], queryFn: api.featureFrequency },
   ] })
-  const all = [stability, heatmap, finalFeatures, frequency]
+  const all = [stability, heatmap, finalFeatures]
   if (all.some(item => item.isLoading)) return <LoadingState />
   const failed = all.find(item => item.isError)
   if (failed) return <ErrorState error={failed.error} retry={() => all.forEach(item => item.refetch())} />
@@ -117,11 +115,10 @@ function FeaturesTab() {
     : { fold: fold || undefined, search, minimum_frequency: minimum, final_only: finalOnly ? 1 : 0, format: 'csv' }
   return <><Header title="Избрани характеристики" purpose="Fold-local LASSO селекциите показват стабилност, а отделният финален fit определя 15-те входа на заключения модел." />
     <div className="branch-flow"><span>Fold-local LASSO селекции → <b>2 015</b> избрани поне веднъж → <b>72</b> в анализа на стабилността</span><span>Отделен финален LASSO fit върху целия GSE25055 → <b>15</b> финални probe sets</span></div>
-    <div className="view-tabs" role="tablist">{[['frequency','Честота на избор'],['heatmap','Fold × характеристика'],['coefficients','Финални коефициенти']].map(([key,label]) => <button role="tab" aria-selected={view === key} key={key} onClick={() => setView(key as FeatureView)}>{label}</button>)}</div>
+    <div className="view-tabs" role="tablist">{[['heatmap','Fold × характеристика'],['coefficients','Финални коефициенти']].map(([key,label]) => <button role="tab" aria-selected={view === key} key={key} onClick={() => setView(key as FeatureView)}>{label}</button>)}</div>
     <div className="toolbar"><label>Външен fold<select value={fold} onChange={event => setFold(event.target.value)}><option value="">Всички fold-ове</option>{Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>Fold {index + 1}</option>)}</select></label><label>Минимална честота<select value={minimum} onChange={event => setMinimum(Number(event.target.value))}>{Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}/10</option>)}</select></label><label>Probe set или ген<input value={search} onChange={event => setSearch(event.target.value)} /></label><label className="check"><input type="checkbox" checked={finalOnly} onChange={event => setFinalOnly(event.target.checked)} /> Само финалните 15</label><Exports csv={api.tableExportUrl(exportView, exportValues)} xlsx={api.tableExportUrl(exportView, { ...exportValues, format: 'xlsx' })} /></div>
     <section className="linked-view">
       <div className="chart-panel" id="feature-chart"><ChartExportActions targetId="feature-chart" filename={`lasso-${view}`} />
-        {view === 'frequency' && <ResponsiveContainer width="100%" height={300}><BarChart data={rows} layout="vertical" margin={{ left: 25 }}><CartesianGrid stroke="#d9e0e6" horizontal={false} /><XAxis type="number" domain={[0,1]} /><YAxis type="category" dataKey="probe_id" width={105} tick={{ fontSize: 10 }} /><Tooltip /><Bar dataKey="selection_frequency" name="Честота" fill="#167b83" onClick={(_, index) => setSelectedProbe(rows[index].probe_id)} /></BarChart></ResponsiveContainer>}
         {view === 'heatmap' && <div className="heatmap"><div className="heat-row head"><span>Probe set</span>{Array.from({length:10},(_,i)=><b key={i}>F{i+1}</b>)}</div>{heatmapRows.map(item => <button key={item.probe_id} className={`heat-row ${chosen === item.probe_id ? 'selected' : ''}`} onClick={() => setSelectedProbe(item.probe_id)}><span>{item.probe_id}</span>{Array.from({length:10},(_,i)=><i key={i} className={item.selected_folds.includes(i+1) ? 'on' : ''}>{item.selected_folds.includes(i+1) ? '●' : '·'}</i>)}</button>)}</div>}
         {view === 'coefficients' && <ResponsiveContainer width="100%" height={340}><BarChart data={finals} layout="vertical" margin={{ left: 25 }}><CartesianGrid stroke="#d9e0e6" horizontal={false} /><XAxis type="number" /><YAxis type="category" dataKey="probe_id" width={105} tick={{ fontSize: 10 }} /><Tooltip /><Bar dataKey="coefficient" name="Коефициент" onClick={(_, index) => setSelectedProbe(finals[index].probe_id)}>{finals.map(item => <Cell key={item.probe_id} fill={(item.coefficient ?? 0) >= 0 ? '#167b83' : '#a85359'} />)}</Bar></BarChart></ResponsiveContainer>}
       </div>
@@ -129,33 +126,6 @@ function FeaturesTab() {
     </section>
     {view === 'coefficients' && <p className="single-note">Отрицателните стойности са свързани с прогноза RD, а положителните — с прогноза pCR; това не е причинно биологично твърдение.</p>}
     <details className="settings"><summary>Настройки</summary><table><tbody><tr><th>Вътрешни разделяния</th><td>5</td></tr><tr><th>Баланс на класовете</th><td>balanced</td></tr><tr><th>Финално C</th><td>0.03</td></tr></tbody></table></details></>
-}
-
-function TreeDiagram({ data }: { data: ForestStructure }) {
-  const width = 1100
-  const height = (data.visible_depth + 1) * 105
-  const position = (node: ForestStructure['nodes'][number]) => ({ x: ((node.position + .5) / (2 ** node.depth)) * width, y: 45 + node.depth * 100 })
-  return <svg className="tree-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Дърво ${data.tree_index} на ${data.implementation === 'custom' ? 'собствения' : 'sklearn'} модел`}>
-    {data.nodes.filter(node => node.parent_id != null).map(node => { const from = position(data.nodes.find(item => item.node_id === node.parent_id)!); const to = position(node); return <g key={`edge-${node.node_id}`}><line x1={from.x} y1={from.y + 25} x2={to.x} y2={to.y - 25} /><text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2}>{node.branch === 'left' ? '≤' : '>'}</text></g> })}
-    {data.nodes.map(node => { const point = position(node); return <g key={node.node_id} transform={`translate(${point.x - 62} ${point.y - 25})`}><rect width="124" height="50" className={node.prediction ? 'pcr-node' : 'rd-node'} /><text x="62" y="17" textAnchor="middle">{node.probe_id ?? `Лист: ${classLabel(node.prediction)}`}</text><text x="62" y="34" textAnchor="middle">{node.leaf ? `pCR ${formatNumber(node.probability, 2)}` : `разделяне ${formatNumber(node.split_value, 2)}`}</text></g> })}
-  </svg>
-}
-
-function ForestTab() {
-  const [implementation, setImplementation] = useState<'custom' | 'sklearn'>('custom')
-  const [tree, setTree] = useState(1)
-  const [depth, setDepth] = useState(3)
-  const [zoom, setZoom] = useState(100)
-  const structure = useQuery({ queryKey: ['forest-structure', implementation, tree, depth], queryFn: () => api.forestStructure(implementation, tree, depth) })
-  if (structure.isLoading) return <LoadingState />
-  if (structure.isError) return <ErrorState error={structure.error} retry={() => structure.refetch()} />
-  const data = structure.data!
-  return <><Header title="Обучение на собствен модел" purpose="Едно реално дърво показва как заключеният Random Forest разделя пациентките по 15-те избрани probe sets." />
-    <div className="facts"><span><b>15</b> входни probe sets</span><span><b>30</b> дървета</span><span><b>6</b> максимална дълбочина</span><span><b>балансирани</b> класове</span></div>
-    <div className="toolbar"><label>Реализация<select value={implementation} onChange={event => setImplementation(event.target.value as 'custom' | 'sklearn')}><option value="custom">Собствен RF</option><option value="sklearn">sklearn RF</option></select></label><label>Дърво<select value={tree} onChange={event => setTree(Number(event.target.value))}>{Array.from({length:30},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}</select></label><label>Видими нива<select value={depth} onChange={event => setDepth(Number(event.target.value))}>{Array.from({length:6},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}</select></label><label>Мащаб<select value={zoom} onChange={event => setZoom(Number(event.target.value))}><option value="75">75%</option><option value="100">100%</option><option value="125">125%</option><option value="150">150%</option></select></label><ChartExportActions targetId="tree-chart" filename={`${implementation}-tree-${tree}`} /></div>
-    <p className="single-note">Контролът за видими нива променя само чертежа, а не обучения модел.</p>
-    <section className="tree-layout"><div id="tree-chart" className="tree-canvas"><div style={{ width: `${zoom}%` }}><TreeDiagram data={data} /></div></div><table className="tree-properties"><tbody><tr><th>Реализация</th><td>{implementation === 'custom' ? 'Собствен RF' : 'sklearn RF'}</td></tr><tr><th>Дърво</th><td>{tree}</td></tr><tr><th>Обучена дълбочина</th><td>{data.full_depth}</td></tr><tr><th>Общо възли</th><td>{data.full_node_count}</td></tr><tr><th>Показани възли</th><td>{data.nodes.length}</td></tr></tbody></table></section>
-    <details className="settings"><summary>Настройки</summary><table><tbody><tr><th>Финално обучение</th><td>Пълният GSE25055 с подредените 15 probe sets</td></tr><tr><th>Моделен пакет</th><td>Съхранен и зареден повторно преди външната оценка</td></tr><tr><th>Брой дървета</th><td>30</td></tr><tr><th>Максимална дълбочина</th><td>6</td></tr><tr><th>Минимум проби за разделяне</th><td>5</td></tr><tr><th>Баланс на класовете</th><td>балансирано тегло</td></tr><tr><th>Начално случайно състояние</th><td>42</td></tr></tbody></table></details></>
 }
 
 type ModelChoice = 'custom_random_forest' | 'sklearn_random_forest' | 'comparison'
@@ -221,7 +191,7 @@ export function ExperimentPage() {
   const [, setSearch] = useSearchParams()
   const active = (tabs.some(([key]) => key === tab) ? tab : tab == null ? 'input' : null) as TabKey | null
   if (!active) return <Navigate to="/experiment/input" replace />
-  const content = { input: <InputTab />, preparation: <PreparationTab />, features: <FeaturesTab />, forest: <ForestTab />, evaluation: <EvaluationTab />, predictions: <PredictionsTab /> }[active]
+  const content = { input: <InputTab />, preparation: <PreparationTab />, features: <FeaturesTab />, evaluation: <EvaluationTab />, predictions: <PredictionsTab /> }[active]
   return <div className="experiment-page">
     <nav className="subtabs" aria-label="Етапи на експеримента">{tabs.map(([key,label]) => <NavLink key={key} to={`/experiment/${key}`} onClick={() => setSearch({})}>{label}</NavLink>)}</nav>
     <div className="tab-content">{content}</div>

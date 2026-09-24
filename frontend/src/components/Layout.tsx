@@ -8,13 +8,12 @@ export function Layout() {
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Към основното съдържание</a>
     <header className="topbar">
-      <NavLink to="/" className="brand" aria-label="GeneResponse Lab">
+      <NavLink to="/experiment" className="brand" aria-label="GeneResponse Lab">
         <img className="brand-logo" src={geneResponseLogo} alt="GeneResponse Lab" />
       </NavLink>
       <div className="topbar-actions">
         <nav aria-label="Основна навигация">
-          <NavLink to="/" end>Начало</NavLink>
-          <NavLink to="/experiment">Експеримент</NavLink>
+          <NavLink to="/experiment">Проследи експеримент</NavLink>
         </nav>
         <span className="researcher-session">
           <span>{session?.researcher_id}</span>

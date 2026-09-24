@@ -1,7 +1,7 @@
 import type {
   Comparison, Curves, CvModel, Dataset, Disagreement, Experiment, Feature,
-  FeatureHeatmap, FeatureStability, FinalValidation, FoldSimilarity, FrequencyBucket, Page,
-  ExpressionPreview, ForestStructure, Prediction, Report, WorkflowStep,
+  FeatureHeatmap, FeatureStability, FinalValidation, FoldSimilarity, Page,
+  ExpressionPreview, Prediction, Report, WorkflowStep,
 } from './types'
 import { clearStoredAuth, readStoredAuth } from './authStorage'
 
@@ -88,7 +88,6 @@ export const api = {
     request<FeatureHeatmap[]>(query('/feature-heatmap', {
       limit, minimum_frequency: minimumFrequency, search,
     })),
-  featureFrequency: () => request<FrequencyBucket[]>('/feature-frequency-distribution'),
   similarities: () => request<FoldSimilarity[]>('/fold-feature-similarity'),
   cvResults: (model?: string) =>
     request<CvModel[]>(query('/cv-results', { model })),
@@ -103,10 +102,6 @@ export const api = {
       experiment, offset, limit,
     })),
   reports: () => request<Report[]>('/reports'),
-  forestStructure: (implementation: string, tree: number, depth: number) =>
-    request<ForestStructure>(query('/forest/structure', {
-      implementation, tree_index: tree, visible_depth: depth,
-    })),
   tableExportUrl: (view: string, values: Record<string, string | number | undefined>) =>
     `${API_BASE}${query(`/table-exports/${view}`, values)}`,
   exportUrl: (path: string) => `${API_BASE.replace(/\/api$/, '')}${path}`,

@@ -216,11 +216,6 @@ export interface FeatureHeatmap {
   source_path: string
 }
 
-export interface FrequencyBucket {
-  selected_folds: number
-  probe_count: number
-}
-
 export interface FoldSimilarity {
   experiment_slug: string
   fold_a: number
@@ -240,22 +235,3 @@ export interface Report {
   source_paths: string[]
 }
 
-export interface ForestStructure {
-  implementation: 'custom' | 'sklearn'
-  tree_index: number
-  visible_depth: number
-  full_depth: number
-  full_node_count: number
-  nodes: Array<{
-    node_id: number
-    parent_id: number | null
-    branch: 'left' | 'right' | null
-    depth: number
-    position: number
-    probe_id: string | null
-    split_value: number | null
-    probability: number
-    prediction: number
-    leaf: boolean
-  }>
-}
